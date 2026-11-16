@@ -7,6 +7,7 @@
 
 const PYODIDE_URL = "__PYODIDE_URL__";
 const PY_FILES = ["structure_compare.py", "resolve_orthologs.py", "abscout.py"];
+const PACKAGES = ["numpy", "biopython", "requests"];
 
 let pyodide = null;
 let ready = null;          // the boot promise, shared by every message
@@ -25,7 +26,7 @@ async function boot() {
   pyodide.setStdout({ batched: () => {} });
 
   post("status", { text: "Loading numpy and Biopython..." });
-  await pyodide.loadPackage(["numpy", "biopython", "requests"]);
+  await loadPackages();
 
   post("status", { text: "Loading AbScout..." });
   pyodide.FS.mkdirTree("/home/pyodide/abscout");
@@ -41,6 +42,32 @@ import abscout
 abscout.__version__`);
   booted = true;
   post("ready", { version });
+}
+
+// Pyodide's loadPackage does not throw when a package fails to download or install: it only
+// logs to the console, and the failure surfaced later as "No module named 'Bio'". Collect its
+// messages, retry once (CDN hiccups are usually transient), and stop with the reason if a
+// package is still missing.
+async function loadPackages() {
+  const problems = [];
+  const opts = { messageCallback: () => {}, errorCallback: (m) => problems.push(m) };
+  const missing = () => PACKAGES.filter((p) => !pyodide.loadedPackages[p]);
+  for (let attempt = 1; attempt <= 2 && missing().length; attempt++) {
+    if (attempt > 1) post("status", { text: "Retrying " + missing().join(", ") + "..." });
+    try {
+      await pyodide.loadPackage(missing(), opts);
+    } catch (e) {
+      problems.push(String(e && e.message ? e.message : e));
+    }
+  }
+  if (missing().length) {
+    throw new Error(
+      "Your browser could not load " + missing().join(", ") + ", part of the Python runtime " +
+      "the page downloads from " + new URL(PYODIDE_URL, self.location).host + ". Reload the " +
+      "page to try again. If it keeps failing, a network filter or browser extension may be " +
+      "blocking that download; please report it at https://github.com/yuingan/abscout/issues " +
+      "with the details below." + (problems.length ? "\n\nDetails:\n" + problems.join("\n") : ""));
+  }
 }
 
 // One cheap request to each service before the first run. If the browser cannot reach
