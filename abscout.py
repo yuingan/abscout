@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -170,6 +170,28 @@ def fetch_uniprot_seq(acc):
 
 class UniProtUnavailable(Exception):
     """A UniProt accession that exists as a reference but has no usable sequence."""
+
+
+# A sequence taken from Ensembl rather than UniProt is labelled "Ensembl:<protein ID>"
+# wherever an accession is shown, so it can never be mistaken for a UniProt accession.
+ENSEMBL_PREFIX = "Ensembl:"
+
+
+def from_uniprot(entry):
+    """True if the entry's sequence is a UniProt accession (so UniProt can be asked about it)."""
+    return not str(entry.get("uniprot") or "").startswith(ENSEMBL_PREFIX)
+
+
+def fetch_ensembl_seq(protein_id):
+    """Ensembl's sequence for a Compara ortholog's translation (cached as raw data)."""
+    cached = cache_get("seq_ensembl", protein_id)
+    if cached:
+        return cached
+    seq = ro.ensembl_protein_seq(protein_id)
+    if not seq:
+        raise UniProtUnavailable(f"Ensembl returned no sequence for {protein_id}")
+    cache_put("seq_ensembl", protein_id, seq)
+    return seq
 
 
 def _inactive_reason(acc):
@@ -739,11 +761,39 @@ def no_target_message(gene, taxid, resolved):
 def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope_seq=None):
     resolved = ro.resolve(gene, target_taxid)
     orths = resolved["orthologs"]
-    targets = [o for o in orths if o["is_target"] and o["uniprot"]]
-    models = [o for o in orths if not o["is_target"] and o["uniprot"]]
+    usable = [o for o in orths if o["uniprot"] or o.get("ensembl_protein")]
+    targets = [o for o in usable if o["is_target"]]
+    models = [o for o in usable if not o["is_target"]]
     if not targets:
         raise AbScoutError(no_target_message(gene, target_taxid, resolved))
     notes = []                  # everything that qualifies the numbers; travels to JSON / CSV
+
+    # ---- a sequence for every Compara ortholog ---------------------------------------------
+    # UniProt deletes unreviewed entries that are not part of a reference proteome, and
+    # Ensembl's cross-references still point at some of them: dog TP53 -> A0A8C0RLV2 and
+    # naked mole-rat THY1 -> A0A0P6J0R8 both come back empty. The ortholog itself is not in
+    # doubt -- Compara called it -- so take the sequence Ensembl holds for that same
+    # translation. Nothing is matched on gene name here. The reviewed-entry step further
+    # down still swaps in a Swiss-Prot entry when one exists and resembles the other species
+    # at least as well (dog TP53 -> Q29537).
+    def entry_sequence(o):
+        label = "target" if o["is_target"] else o["common"]
+        if o.get("uniprot"):
+            try:
+                return o, fetch_uniprot_seq(o["uniprot"])
+            except UniProtUnavailable as exc:
+                if not o.get("ensembl_protein"):
+                    raise
+                why = f"UniProt {o['uniprot']} is {exc}"
+        else:
+            why = "Ensembl links no UniProt entry to it"
+        seq = fetch_ensembl_seq(o["ensembl_protein"])
+        sys.stderr.write(f"  [{label}] {why}: using Ensembl's sequence of the Compara "
+                         f"ortholog, {o['ensembl_protein']} ({len(seq)} aa)\n")
+        notes.append(f"{label}: {why}; used Ensembl's sequence of the Compara ortholog, "
+                     f"{o['ensembl_protein']} ({len(seq)} aa)")
+        return dict(o, uniprot=ENSEMBL_PREFIX + o["ensembl_protein"],
+                    uniprot_status="ensembl", replaced_uniprot=o.get("uniprot")), seq
 
     # ---- the target sequence --------------------------------------------------------------
     # Every identity in the run is measured against this one sequence, so taking whichever
@@ -766,14 +816,15 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     target_cands, unusable = [], []
     for t in targets:
         try:
-            target_cands.append((t, fetch_uniprot_seq(t["uniprot"])))
+            target_cands.append(entry_sequence(t))
         except Exception as exc:
-            sys.stderr.write(f"  [warn] could not fetch target {t['uniprot']}: {exc}\n")
-            unusable.append(f"{t['uniprot']} ({t['species']}): {exc}")
+            ident = t["uniprot"] or t.get("ensembl_protein")
+            sys.stderr.write(f"  [warn] could not fetch target {ident}: {exc}\n")
+            unusable.append(f"{ident} ({t['species']}): {exc}")
     if not target_cands:
         raise AbScoutError(
             f"No usable target sequence for {gene} in taxid {target_taxid}. Ensembl Compara "
-            f"found the ortholog, but its UniProt entry cannot be used -- "
+            f"found the ortholog, but neither UniProt nor Ensembl gave a sequence for it -- "
             + "; ".join(unusable) + ". Please check it manually.")
     target_cands.sort(key=rank_against(max(len(x) for _, x in target_cands)), reverse=True)
     target, target_seq = target_cands[0]
@@ -796,10 +847,11 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     with_seq = []
     for m in models:
         try:
-            with_seq.append((m, fetch_uniprot_seq(m["uniprot"])))
+            with_seq.append(entry_sequence(m))
         except Exception as exc:
-            sys.stderr.write(f"  [warn] could not fetch {m['common']} ({m['uniprot']}): {exc}\n")
-            notes.append(f"{m['common']} ({m['uniprot']}) skipped: {str(exc)[:100]}")
+            ident = m["uniprot"] or m.get("ensembl_protein")
+            sys.stderr.write(f"  [warn] could not fetch {m['common']} ({ident}): {exc}\n")
+            notes.append(f"{m['common']} ({ident}) skipped: {str(exc)[:100]}")
 
     by_species, chosen = {}, []
     for m, seq in with_seq:
@@ -835,7 +887,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     # wrong, and a reviewed accession is only ever swapped for another reviewed one.
     rescued = []
     for m, mseq in chosen:
-        if len(mseq) < 0.6 * len(target_seq):
+        if len(mseq) < 0.6 * len(target_seq) and from_uniprot(m):
             try:
                 better, bstatus, _ = ro.upgrade_partial(
                     m["uniprot"], m.get("uniprot_status"), gene, m["taxid"])
@@ -873,8 +925,9 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     if chosen:
         typical = sorted(len(s) for _, s in chosen)[len(chosen) // 2]       # median model
         if len(target_seq) < 0.6 * typical:
-            better, bstatus, _ = ro.upgrade_partial(
+            better, bstatus, _ = (ro.upgrade_partial(
                 target["uniprot"], target.get("uniprot_status"), gene, target["taxid"])
+                if from_uniprot(target) else (None, None, ""))
             if better and better != target["uniprot"]:
                 bseq = fetch_uniprot_seq(better)
                 oth = others_than("__target__")
@@ -934,11 +987,12 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
                 best = (acc, aseq, sc_)
         if best and best[2] >= ORTHOLOG_FLOOR and best[2] >= cur - SWAP_TOLERANCE:
             label = "target" if common == "__target__" else common
+            was = ("Ensembl's sequence " if entry.get("uniprot_status") == "ensembl"
+                   else "unreviewed ") + entry["uniprot"]
             sys.stderr.write(f"  [{label}] using reviewed {best[0]} ({len(best[1])} aa) instead "
-                             f"of unreviewed {entry['uniprot']} ({len(seq)} aa)\n")
-            notes.append(f"{label}: used reviewed {best[0]} instead of unreviewed "
-                         f"{entry['uniprot']} (similarity to other species {best[2]:.2f} vs "
-                         f"{cur:.2f})")
+                             f"of {was} ({len(seq)} aa)\n")
+            notes.append(f"{label}: used reviewed {best[0]} instead of {was} (similarity to "
+                         f"other species {best[2]:.2f} vs {cur:.2f})")
             return dict(entry, uniprot=best[0], uniprot_status="reviewed"), best[1]
         if best:
             label = "target" if common == "__target__" else common
@@ -972,8 +1026,10 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     # allowed to settle the question when it ran on the longest model: a fragment that
     # happens to exclude the helix previously marked the whole protein soluble.
     curated, anchor = {}, {}
+    def curated_topology(m, n):
+        return uniprot_topology(m["uniprot"], n) if from_uniprot(m) else (None, "")
     for m, mseq in chosen:
-        curated[m["uniprot"]], anchor[m["uniprot"]] = uniprot_topology(m["uniprot"], len(mseq))
+        curated[m["uniprot"]], anchor[m["uniprot"]] = curated_topology(m, len(mseq))
     # A curated helix or a curated GPI anchor both settle the question: the protein sits in
     # a membrane, and TMbed must not be allowed to call it soluble.
     has_curated_tm = any(k in ("tm", "gpi") for k in anchor.values())
@@ -1008,8 +1064,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
                              f"{len(mseq)} aa vs target {len(target_seq)} aa, no longer entry")
                 continue
             if m["uniprot"] not in curated:        # e.g. an accession swapped in after the pass
-                curated[m["uniprot"]], anchor[m["uniprot"]] = uniprot_topology(
-                    m["uniprot"], len(mseq))
+                curated[m["uniprot"]], anchor[m["uniprot"]] = curated_topology(m, len(mseq))
             topo = curated[m["uniprot"]]                              # curated first
             kind = anchor.get(m["uniprot"], "")
             source = "UniProt (GPI-anchored)" if kind == "gpi" else "UniProt"
@@ -1018,7 +1073,8 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
             elif topo is None and no_tm_seen:
                 source = "none (soluble)"                             # settled above
             elif topo is None and not tmbed_ok:                       # nothing to predict with
-                source = "not annotated in UniProt"
+                source = ("not annotated in UniProt" if from_uniprot(m)
+                          else "no UniProt entry (Ensembl sequence)")
                 no_topology.append(f"{m['common']} ({m['uniprot']})")
             elif topo is None:                                        # fall back to prediction
                 topo = run_tmbed(mseq, work, m["common"], acc=m["uniprot"])
@@ -1100,7 +1156,8 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
             ref_entry = next((m for m in model_results if m["common"] == epitope_ref), None)
             ref_seq = next((s for c, s in model_seqs if c == epitope_ref), "")
             n_ref = len(ref_seq)
-            nterm = uniprot_nterm(ref_entry["uniprot"], n_ref) if ref_entry else None
+            nterm = (uniprot_nterm(ref_entry["uniprot"], n_ref)
+                     if ref_entry and from_uniprot(ref_entry) else None)
             if not nterm or nterm["mature_start"] == 1:
                 # nothing curated: fall back to a signal peptide predicted in the topology
                 sp = signal_peptide_len(topo_by_common.get(epitope_ref))

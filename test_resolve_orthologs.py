@@ -74,6 +74,9 @@ def test_resolve_end_to_end():
     assert {o["uniprot"] for o in zf} == {"DARA1", "DARB1"}
     # human flagged not-target, mouse not-target
     assert by_common["human"]["is_target"] is False
+    # the Compara translation is kept, so its own sequence can stand in for a deleted entry
+    assert by_common["human"]["ensembl_protein"] is None
+    assert all(o["ensembl_protein"] for o in res["orthologs"] if o["common"] != "human"), res
     print("resolve() end-to-end OK:",
           [(o["common"], o["uniprot"], o["orthology_type"]) for o in res["orthologs"]])
 
@@ -186,6 +189,20 @@ def test_compara_coverage_from_ensembl_genome_info():
     print("compara coverage OK: Damara mole-rat genome recognised as outside Compara")
 
 
+def test_ensembl_protein_sequence():
+    saved = ro.ensembl_get
+    try:
+        ro.ensembl_get = lambda path, params=None: (
+            {"id": "ENSCAFP00845000001", "molecule": "protein", "seq": "MEEPQSDLSV*"}
+            if path == "/sequence/id/ENSCAFP00845000001" and ("type", "protein") in params
+            else None)
+        assert ro.ensembl_protein_seq("ENSCAFP00845000001") == "MEEPQSDLSV"
+        assert ro.ensembl_protein_seq("ENSCAFP_MISSING") is None
+    finally:
+        ro.ensembl_get = saved
+    print("Ensembl protein sequence OK: stop codon stripped, no answer -> None")
+
+
 if __name__ == "__main__":
     test_parse_homologies_condensed()
     test_parse_homologies_nested()
@@ -196,4 +213,5 @@ if __name__ == "__main__":
     test_xref_selection_is_deterministic()
     test_reviewed_partial_is_upgraded_within_swissprot()
     test_compara_coverage_from_ensembl_genome_info()
+    test_ensembl_protein_sequence()
     print("\nALL RESOLVE-ORTHOLOGS TESTS PASSED")

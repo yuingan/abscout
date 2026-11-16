@@ -77,6 +77,14 @@ def ensembl_get(path, params=None):
     return None
 
 
+def ensembl_protein_seq(protein_id):
+    """The protein sequence Ensembl holds for a translation (ENS...P...): the sequence Compara
+    itself used when it called the ortholog. None if Ensembl gave nothing back."""
+    resp = ensembl_get(f"/sequence/id/{protein_id}", [("type", "protein")])
+    seq = resp.get("seq", "") if isinstance(resp, dict) else ""
+    return seq.replace("*", "").strip() or None
+
+
 def compara_genomes(taxid):
     """
     The Ensembl genomes for a taxon as [(display_name, name, in_compara)], [] when Ensembl
@@ -274,7 +282,7 @@ def resolve(gene, target_taxid):
                 sys.stderr.write(f"  [{species}] {note}\n")
         result["orthologs"].append({
             "species": species, "common": COMMON_NAME.get(species, species),
-            "taxid": taxid, "ensembl_gene": ensembl_gene,
+            "taxid": taxid, "ensembl_gene": ensembl_gene, "ensembl_protein": protein_id,
             "uniprot": acc, "uniprot_status": status, "note": note,
             "orthology_type": otype, "is_target": (taxid == target_taxid),
         })

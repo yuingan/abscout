@@ -1024,6 +1024,121 @@ def test_no_target_message_says_why():
           "UniProt entry each get their own message")
 
 
+class _DeletedSeqs(dict):
+    """UniProt sequences where some accessions behave like deleted entries (empty FASTA)."""
+    def __init__(self, base, deleted):
+        super().__init__(base)
+        self.deleted = set(deleted)
+
+    def __getitem__(self, acc):
+        if acc in self.deleted:
+            raise ab.UniProtUnavailable("deleted from UniProtKB (Not part of a reference "
+                                        "proteome)")
+        return dict.__getitem__(self, acc)
+
+
+def _cd3e_topology(asked):
+    hum = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
+    def topo(acc, n):
+        asked.append(acc)
+        return (hum, "tm") if acc == "P07766" else (None, "")
+    return topo
+
+
+def test_deleted_target_uses_ensembl_then_swissprot():
+    """Real case: dog TP53's Compara link (A0A8C0RLV2) is deleted from UniProt. Shown with real
+    CD3E sequences: Ensembl's sequence of the same Compara ortholog takes the deleted entry's
+    place, and the reviewed Swiss-Prot entry (P27597) then replaces it as the curated one.
+    Nothing is matched on name alone: the Swiss-Prot entry must resemble the other species
+    at least as well as Compara's own sequence does."""
+    import resolve_orthologs as ro
+    dog = dict(_orth("dog", "A0A_DELETED", "unreviewed", 9615, True),
+               ensembl_protein="ENSCAFP_T")
+    orths = [_orth("human", "P07766", "reviewed", 9606),
+             _orth("mouse", "P22646", "reviewed", 10090), dog]
+    asked, saved = [], ab.fetch_ensembl_seq
+    ab.fetch_ensembl_seq = lambda pid: REAL["A0A8I3MGF0"]     # the gene model Ensembl holds
+    try:
+        resolved, target, models, _ = _stub_run(
+            ro, orths, _DeletedSeqs(REAL, ["A0A_DELETED"]), tmbed_ok=False,
+            topology=_cd3e_topology(asked),
+            reviewed=lambda g, t: ["P27597"] if t == 9615 else [])
+    finally:
+        ab.fetch_ensembl_seq = saved
+    assert target["uniprot"] == "P27597" and target["uniprot_status"] == "reviewed", target
+    notes = " ".join(resolved["notes"])
+    assert "UniProt A0A_DELETED is deleted from UniProtKB" in notes, notes
+    assert "Ensembl's sequence of the Compara ortholog, ENSCAFP_T" in notes, notes
+    assert "used reviewed P27597 instead of Ensembl's sequence Ensembl:ENSCAFP_T" in notes, notes
+    assert not any(str(a).startswith("Ensembl:") for a in asked), "UniProt asked about an Ensembl ID"
+    print("deleted target OK: A0A_DELETED -> Ensembl ENSCAFP_T -> reviewed P27597")
+
+
+def test_deleted_target_without_swissprot_keeps_ensembl_sequence():
+    """Naked mole-rat THY1 case: no reviewed entry exists, so the run goes ahead on Ensembl's
+    sequence and every report labels it as such."""
+    import resolve_orthologs as ro
+    dog = dict(_orth("dog", "A0A_DELETED", "unreviewed", 9615, True),
+               ensembl_protein="ENSCAFP_T")
+    orths = [_orth("human", "P07766", "reviewed", 9606),
+             _orth("mouse", "P22646", "reviewed", 10090), dog]
+    asked, saved = [], ab.fetch_ensembl_seq
+    ab.fetch_ensembl_seq = lambda pid: REAL["P27597"]
+    try:
+        resolved, target, models, _ = _stub_run(
+            ro, orths, _DeletedSeqs(REAL, ["A0A_DELETED"]), tmbed_ok=False,
+            topology=_cd3e_topology(asked))
+    finally:
+        ab.fetch_ensembl_seq = saved
+    assert target["uniprot"] == "Ensembl:ENSCAFP_T" and target["uniprot_status"] == "ensembl"
+    assert target["replaced_uniprot"] == "A0A_DELETED"
+    assert {m["common"] for m in models} == {"human", "mouse"}, models
+    html = ab.render_html("CD3E", target, models, None, notes=resolved["notes"])
+    assert "Ensembl:ENSCAFP_T" in html, "the report must say where the target came from"
+    print("deleted target OK: no Swiss-Prot entry -> run on Ensembl:ENSCAFP_T, labelled")
+
+
+def test_deleted_model_uses_ensembl_sequence_without_uniprot_lookups():
+    import resolve_orthologs as ro
+    mouse = dict(_orth("mouse", "A0A_GONE", "unreviewed", 10090), ensembl_protein="ENSMUSP_T")
+    orths = [_orth("human", "P07766", "reviewed", 9606), mouse,
+             _orth("dog", "P27597", "reviewed", 9615, True)]
+    asked, saved = [], ab.fetch_ensembl_seq
+    ab.fetch_ensembl_seq = lambda pid: REAL["P22646"]
+    try:
+        resolved, target, models, _ = _stub_run(
+            ro, orths, _DeletedSeqs(REAL, ["A0A_GONE"]), tmbed_ok=False,
+            topology=_cd3e_topology(asked))
+    finally:
+        ab.fetch_ensembl_seq = saved
+    mou = [m for m in models if m["common"] == "mouse"][0]
+    assert mou["uniprot"] == "Ensembl:ENSMUSP_T", mou
+    assert mou["topology_source"] == "no UniProt entry (Ensembl sequence)", mou
+    assert mou["overall"] and not any(str(a).startswith("Ensembl:") for a in asked), asked
+    print("deleted model OK: mouse compared on Ensembl's sequence, UniProt not asked about it")
+
+
+def test_no_sequence_anywhere_is_reported():
+    import resolve_orthologs as ro
+    dog = dict(_orth("dog", "A0A_DELETED", "unreviewed", 9615, True),
+               ensembl_protein="ENSCAFP_T")
+    saved = ab.fetch_ensembl_seq
+
+    def none(pid):
+        raise ab.UniProtUnavailable(f"Ensembl returned no sequence for {pid}")
+    ab.fetch_ensembl_seq = none
+    try:
+        _stub_run(ro, [_orth("human", "P07766", "reviewed", 9606), dog],
+                  _DeletedSeqs(REAL, ["A0A_DELETED"]), tmbed_ok=False)
+    except ab.AbScoutError as e:
+        assert "neither UniProt nor Ensembl gave a sequence" in str(e), str(e)
+    else:
+        raise AssertionError("must stop when no sequence can be had")
+    finally:
+        ab.fetch_ensembl_seq = saved
+    print("no-sequence OK: stops and says neither source had one")
+
+
 if __name__ == "__main__":
     test_region_table_no_recommendation()
     test_handles_missing_region_and_paralogs()
@@ -1075,4 +1190,8 @@ if __name__ == "__main__":
     test_without_tmbed_uncurated_species_keeps_whole_protein_numbers()
     test_without_tmbed_nothing_curated_is_unknown_not_soluble()
     test_no_target_message_says_why()
+    test_deleted_target_uses_ensembl_then_swissprot()
+    test_deleted_target_without_swissprot_keeps_ensembl_sequence()
+    test_deleted_model_uses_ensembl_sequence_without_uniprot_lookups()
+    test_no_sequence_anywhere_is_reported()
     print("\nALL ABSCOUT TESTS PASSED")

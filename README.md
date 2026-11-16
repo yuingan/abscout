@@ -339,10 +339,14 @@ this threshold is not calibrated here.
   message. To check a species: `https://rest.ensembl.org/info/genomes/taxonomy/<taxid>?content-type=application/json`
   and look at `has_peptide_compara`.
 
-- **Withdrawn UniProt entries.** Ensembl's cross-reference can point at a UniProt entry that
-  has since been deleted (naked mole-rat THY1 resolves to `A0A0P6J0R8`, deleted as "not part
-  of a reference proteome"). AbScout then stops and names the deleted entry instead of running
-  on an empty sequence. Check such cases by hand.
+- **Withdrawn UniProt entries.** UniProt deletes unreviewed entries that are not part of a
+  reference proteome, and Ensembl's cross-references still point at some of them (dog TP53 ->
+  `A0A8C0RLV2`, naked mole-rat THY1 -> `A0A0P6J0R8`). AbScout then takes the sequence Ensembl
+  holds for that same Compara ortholog (labelled `Ensembl:<protein ID>` in every report), and
+  the usual Swiss-Prot step still replaces it with a reviewed entry when one exists and
+  resembles the other species at least as well (dog TP53 -> `Q29537`). Nothing is matched on
+  gene name alone. Ensembl sequences have no UniProt topology, so a model species taken from
+  Ensembl gets TMbed's prediction, or whole-protein identity where TMbed is not available.
 
 ## Components
 
