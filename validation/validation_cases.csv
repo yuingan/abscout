@@ -1,0 +1,10 @@
+case,gene,target_taxon,epitope_coor,epitope_ref,known_outcome,evidence
+cetuximab_cyno,EGFR,9541,337-506,human,cross-reactive,"binds cynomolgus EGFR (epithelial staining); range is domain III, 313-482 in the mature-protein numbering of the structural literature = 337-506 in UniProt numbering (24-residue signal peptide), which is the window containing S492, the residue whose mutation S492R abolishes cetuximab binding"
+cetuximab_mouse,EGFR,10090,337-506,human,not-cross-reactive,"5/7 contact residues differ in mouse (PDB 1YY9); range is domain III, 313-482 in the mature-protein numbering of the structural literature = 337-506 in UniProt numbering (24-residue signal peptide), which is the window containing S492, the residue whose mutation S492R abolishes cetuximab binding"
+rituximab_cyno,MS4A1,9541,163-187,human,cross-reactive,depletes B cells in cynomolgus
+rituximab_mouse,MS4A1,10090,163-187,human,not-cross-reactive,A170S + P172S abolish binding
+trastuzumab_cyno,ERBB2,9541,529-625,human,cross-reactive,domain IV 98.6% identical to human
+trastuzumab_mouse,ERBB2,10090,529-625,human,not-cross-reactive,P557/571/572 + F573 -> Ser in neu
+zo1_1a12_nmr,TJP1,10181,,human,,prediction only: no published reactivity data for naked mole-rat (the clone is broadly reactive in mouse/rat/dog/monkey/zebrafish)
+zo1_1a12_mouse,TJP1,10090,,human,cross-reactive,Neuro-2a western blot
+zo1_1a12_zebrafish,TJP1,7955,,human,cross-reactive,published zebrafish skin staining

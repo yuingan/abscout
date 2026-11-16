@@ -1,0 +1,101 @@
+// AbScout web version: runs the unchanged AbScout Python source (abscout.py,
+// resolve_orthologs.py, structure_compare.py) inside the browser with Pyodide.
+// Nothing is sent to any AbScout server; queries go straight from this browser to
+// Ensembl and UniProt, exactly as the command-line version makes them.
+//
+// build_site.py fills in PYODIDE_URL and copies the Python files into py/.
+
+const PYODIDE_URL = "__PYODIDE_URL__";
+const PY_FILES = ["structure_compare.py", "resolve_orthologs.py", "abscout.py"];
+
+let pyodide = null;
+let ready = null;          // the boot promise, shared by every message
+let booted = false;
+
+function post(type, extra) {
+  self.postMessage(Object.assign({ type }, extra || {}));
+}
+
+async function boot() {
+  post("status", { text: "Loading the Python runtime (first visit only: about 15 MB)..." });
+  const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
+  pyodide = await loadPyodide({ indexURL: PYODIDE_URL });
+  // AbScout writes progress to stderr; show it line by line while a run is going
+  pyodide.setStderr({ batched: (line) => post("log", { line }) });
+  pyodide.setStdout({ batched: () => {} });
+
+  post("status", { text: "Loading numpy and Biopython..." });
+  await pyodide.loadPackage(["numpy", "biopython", "requests"]);
+
+  post("status", { text: "Loading AbScout..." });
+  pyodide.FS.mkdirTree("/home/pyodide/abscout");
+  for (const f of PY_FILES) {
+    const r = await fetch("py/" + f, { cache: "no-cache" });
+    if (!r.ok) throw new Error("could not load " + f + " (" + r.status + ")");
+    pyodide.FS.writeFile("/home/pyodide/abscout/" + f, await r.text());
+  }
+  const version = pyodide.runPython(`
+import sys
+sys.path.insert(0, "/home/pyodide/abscout")
+import abscout
+abscout.__version__`);
+  booted = true;
+  post("ready", { version });
+}
+
+// One cheap request to each service before the first run. If the browser cannot reach
+// them (offline, firewall, an extension blocking requests), say so plainly instead of
+// letting it surface later as "no ortholog found".
+let reachable = false;
+async function checkServices() {
+  if (reachable) return;
+  const probes = [
+    ["Ensembl", "https://rest.ensembl.org/info/ping?content-type=application/json"],
+    ["UniProt", "https://rest.uniprot.org/uniprotkb/P07766.fasta"],
+  ];
+  for (const [name, url] of probes) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    } catch (e) {
+      throw new Error(
+        "This browser could not reach " + name + " (" + e.message + "). AbScout needs " +
+        "Ensembl and UniProt; check the network connection, or whether a firewall or " +
+        "browser extension blocks rest.ensembl.org / rest.uniprot.org, then try again.");
+    }
+  }
+  reachable = true;
+}
+
+const RUN_PY = `
+import json, abscout
+a = dict(ARGS)
+try:
+    ep = abscout.parse_epitope_coor(a["epitope_coor"]) if a.get("epitope_coor") else None
+    out = abscout.run_single(a["gene"], int(a["taxon"]), ep,
+                             a.get("epitope_ref") or "human", a.get("epitope_seq") or None)
+    res = {"ok": True, "html": out["html"], "result": json.dumps(out["result"], indent=2),
+           "report": out["report"]}
+except (ValueError, abscout.AbScoutError) as exc:
+    res = {"ok": False, "error": str(exc)}
+json.dumps(res)
+`;
+
+self.onmessage = async (ev) => {
+  const msg = ev.data || {};
+  try {
+    if (!ready) ready = boot();
+    await ready;
+    if (msg.type !== "run") return;
+    post("status", { text: "Checking that Ensembl and UniProt can be reached..." });
+    await checkServices();
+    post("status", { text: "Running AbScout..." });
+    pyodide.globals.set("ARGS", pyodide.toPy(msg.args));
+    const out = JSON.parse(pyodide.runPython(RUN_PY));
+    post("done", out);
+  } catch (e) {
+    if (!booted) ready = null;                   // a failed load can be retried
+    post("done", { ok: false, error: String(e && e.message ? e.message : e),
+                   unexpected: booted && !(e && e.message && e.message.startsWith("This browser")) });
+  }
+};

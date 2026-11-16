@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AbScout</title>
+<meta name="description" content="Cross-species sequence identity of an antibody's target, by membrane region and epitope. Runs in your browser.">
+<style>
+ :root{--ink:#222;--muted:#6b7280;--line:#e5e7eb;--soft:#f7f8fa;--accent:#1f5f99}
+ *{box-sizing:border-box}
+ body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#fff;max-width:860px;margin:28px auto;padding:0 16px;line-height:1.5}
+ h1{font-size:24px;margin:0 0 2px} .sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+ form{border:1px solid var(--line);border-radius:8px;padding:16px 18px;background:var(--soft)}
+ .row{display:flex;gap:14px;flex-wrap:wrap}
+ .field{flex:1 1 220px;margin-bottom:12px}
+ label{display:block;font-weight:600;font-size:14px;margin-bottom:4px}
+ .hint{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:3px}
+ input,select{width:100%;font:inherit;font-size:15px;padding:7px 9px;border:1px solid #cbd2d9;border-radius:6px;background:#fff;color:var(--ink)}
+ input:focus,select:focus{outline:2px solid #9cc3e6;border-color:var(--accent)}
+ fieldset{border:1px solid var(--line);border-radius:6px;padding:10px 12px 2px;margin:4px 0 12px;background:#fff}
+ legend{font-size:14px;font-weight:600;padding:0 4px}
+ button{font:inherit;font-size:15px;font-weight:600;padding:8px 18px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+ button:disabled{opacity:.55;cursor:default}
+ button.ghost{background:#fff;color:var(--accent)}
+ #status{color:var(--muted);font-size:14px;margin:12px 0 0;min-height:1.5em}
+ .error{background:#fef2f2;border:1px solid #f5b5b5;color:#7f1d1d;border-radius:6px;padding:10px 14px;margin:14px 0;font-size:14px;white-space:pre-wrap}
+ details.log{margin:12px 0;font-size:13px}
+ details.log summary{cursor:pointer;color:var(--muted)}
+ #log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#fafafa;border:1px solid #eee;border-radius:6px;padding:8px;max-height:260px;overflow:auto;white-space:pre-wrap;margin:6px 0 0}
+ #result{margin-top:18px}
+ #actions{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 10px}
+ iframe{width:100%;border:1px solid var(--line);border-radius:8px;min-height:300px}
+ .about{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:12px;margin-top:26px}
+ .about p{margin:6px 0}
+ a{color:var(--accent)}
+ [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<h1>AbScout</h1>
+<p class="sub">Sequence identity of an antibody's target between your species and the species
+antibodies are raised in or validated on (human, mouse, rat, rabbit), split into extracellular,
+transmembrane and intracellular regions, plus the epitope if you give it.
+<span id="ver"></span></p>
+
+<form id="form" autocomplete="off">
+  <div class="row">
+    <div class="field">
+      <label for="gene">Human gene symbol</label>
+      <input id="gene" name="gene" required placeholder="e.g. CD3E" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="taxon">Target species</label>
+      <input id="taxon" name="taxon" list="species" required placeholder="e.g. dog (9615) or a taxon ID">
+      <span class="hint">Pick from the list or type an NCBI taxonomy ID.</span>
+      <datalist id="species">
+        <option value="dog (9615)"><option value="cat (9685)"><option value="pig (9823)">
+        <option value="cow (9913)"><option value="sheep (9940)"><option value="goat (9925)">
+        <option value="horse (9796)"><option value="rhesus macaque (9544)">
+        <option value="cynomolgus macaque (9541)"><option value="common marmoset (9483)">
+        <option value="naked mole-rat (10181)"><option value="Damaraland mole-rat (885580)">
+        <option value="guinea pig (10141)"><option value="golden hamster (10036)">
+        <option value="Chinese hamster (10029)"><option value="ferret (9669)">
+        <option value="opossum (13616)"><option value="chicken (9031)">
+        <option value="Xenopus tropicalis (8364)"><option value="zebrafish (7955)">
+        <option value="medaka (8090)"><option value="mouse (10090)"><option value="rat (10116)">
+        <option value="rabbit (9986)"><option value="human (9606)">
+      </datalist>
+    </div>
+  </div>
+
+  <fieldset>
+    <legend>Epitope (optional)</legend>
+    <div class="row">
+      <div class="field">
+        <label for="epseq">Immunogen peptide</label>
+        <input id="epseq" name="epseq" placeholder="e.g. ERPPPVPNPDYEP" spellcheck="false">
+        <span class="hint">From the antibody datasheet; AbScout finds where it sits.</span>
+      </div>
+      <div class="field">
+        <label for="epcoor">or residue range</label>
+        <input id="epcoor" name="epcoor" placeholder="e.g. 337-506" spellcheck="false">
+        <span class="hint">UniProt numbering. If a peptide is given, the peptide is used.</span>
+      </div>
+      <div class="field" style="flex:0 1 150px">
+        <label for="epref">numbered on</label>
+        <select id="epref" name="epref">
+          <option value="human">human</option><option value="mouse">mouse</option>
+          <option value="rat">rat</option><option value="rabbit">rabbit</option>
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <button id="run" type="submit">Run</button>
+  <div id="status" role="status" aria-live="polite"></div>
+</form>
+
+<div id="error" class="error" hidden></div>
+
+<details class="log" id="logbox" hidden>
+  <summary>Run log</summary>
+  <pre id="log"></pre>
+</details>
+
+<section id="result" hidden>
+  <div id="actions">
+    <button class="ghost" id="dl-html" type="button">Download report (HTML)</button>
+    <button class="ghost" id="dl-json" type="button">Download data (JSON)</button>
+  </div>
+  <iframe id="report" title="AbScout report" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
+</section>
+
+<div class="about">
+  <p><b>Web version.</b> Membrane topology comes from UniProt's curated annotation. A species
+  without one is compared on whole-protein identity and the run notes say so; the
+  <a href="https://github.com/yuingan/abscout">source-code version</a> predicts topology with
+  TMbed and also runs many cases from a spreadsheet.</p>
+  <p>Everything runs in your browser. Queries go directly from your browser to Ensembl and
+  UniProt; nothing is sent to or stored by AbScout.</p>
+  <p>Percent identities are provided for your interpretation &mdash; not a guarantee of binding.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const worker = new Worker("worker.js", { type: "module" });
+let started = false, busy = false, last = null;
+
+function preload() {
+  if (!started) { started = true; worker.postMessage({ type: "load" }); }
+}
+$("form").addEventListener("focusin", preload);
+
+function setBusy(on) {
+  busy = on;
+  $("run").disabled = on;
+  $("run").textContent = on ? "Running..." : "Run";
+}
+
+function taxonFrom(text) {
+  const m = String(text).trim().match(/(\d+)\)?\s*$/);
+  return m ? m[1] : null;
+}
+
+$("form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  if (busy) return;
+  const gene = $("gene").value.trim();
+  const taxon = taxonFrom($("taxon").value);
+  const epseq = $("epseq").value.replace(/\s+/g, "").toUpperCase();
+  const epcoor = $("epcoor").value.replace(/\s+/g, "");
+  $("error").hidden = true;
+  if (!gene) return showError("Enter a human gene symbol, e.g. CD3E.");
+  if (!taxon) return showError("Enter the target species as a taxon ID, e.g. 9615, or pick one from the list.");
+  if (epcoor && !/^\d+-\d+$/.test(epcoor)) return showError("The residue range must look like START-END, e.g. 337-506.");
+  preload();
+  setBusy(true);
+  $("log").textContent = "";
+  $("logbox").hidden = false;
+  $("result").hidden = true;
+  worker.postMessage({ type: "run", args: {
+    gene: gene.toUpperCase(), taxon, epitope_seq: epseq || null,
+    epitope_coor: epcoor || null, epitope_ref: $("epref").value } });
+});
+
+function showError(text) {
+  $("error").textContent = text;
+  $("error").hidden = false;
+}
+
+worker.onmessage = (ev) => {
+  const m = ev.data;
+  if (m.type === "status") $("status").textContent = m.text;
+  else if (m.type === "ready") {
+    $("ver").textContent = "AbScout " + m.version + ", web version.";
+    if (!busy) $("status").textContent = "Ready.";
+  } else if (m.type === "log") {
+    $("log").textContent += m.line + "\n";
+    $("log").scrollTop = $("log").scrollHeight;
+  } else if (m.type === "done") {
+    setBusy(false);
+    if (m.ok) {
+      last = m;
+      $("status").textContent = "Done.";
+      showReport(m.html);
+    } else {
+      $("status").textContent = "";
+      showError(m.unexpected
+        ? "Something went wrong inside AbScout. Please report it at " +
+          "https://github.com/yuingan/abscout/issues with the details below.\n\n" + m.error
+        : m.error);
+    }
+  }
+};
+
+function showReport(html) {
+  const f = $("report");
+  $("result").hidden = false;
+  f.onload = () => {
+    const doc = f.contentDocument;
+    const fit = () => { f.style.height = (doc.documentElement.scrollHeight + 4) + "px"; };
+    fit();
+    new ResizeObserver(fit).observe(doc.body);
+  };
+  f.srcdoc = html;
+  $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function save(text, type, name) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function stem() {
+  return "abscout_" + $("gene").value.trim().toUpperCase() + "_" + taxonFrom($("taxon").value);
+}
+$("dl-html").addEventListener("click", () => last && save(last.html, "text/html", stem() + ".html"));
+$("dl-json").addEventListener("click", () => last && save(last.result, "application/json", stem() + ".json"));
+</script>
+</body>
+</html>

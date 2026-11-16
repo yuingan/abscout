@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# web version build output (made by web/build_site.py)
+_site/
+
+# reports and batch results written into the repo folder by local runs
+/*.html
+/*.json
+/abscout_batch*.csv
+
+# local caches and environments
+.abscout_cache/
+.venv/
+.ipynb_checkpoints/
+.DS_Store

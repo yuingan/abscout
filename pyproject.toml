@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abscout"
+version = "0.8.0"
+description = "Predict cross-species antibody cross-reactivity for membrane proteins by per-region sequence identity"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "AbScout authors" }]
+keywords = [
+    "antibody",
+    "cross-reactivity",
+    "membrane protein",
+    "ortholog",
+    "bioinformatics",
+    "immunology",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "requests",
+    "biopython",
+    "numpy",
+]
+
+# TMbed (and its torch / transformers stack) and the optional tmtools are installed via conda —
+# see environment.yml. They are external tools rather than pip dependencies of this package.
+[project.optional-dependencies]
+structure = ["tmtools"]
+
+[project.scripts]
+abscout = "abscout:main"
+
+[project.urls]
+Homepage = "https://github.com/yuingan/abscout"
+Repository = "https://github.com/yuingan/abscout"
+
+[tool.setuptools]
+py-modules = ["abscout", "resolve_orthologs", "structure_compare"]

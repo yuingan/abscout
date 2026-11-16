@@ -1,0 +1,376 @@
+# AbScout
+
+**Predict cross-species antibody cross-reactivity for membrane proteins, by membrane region.**
+
+AbScout helps you decide whether a commercial antibody — raised against human, mouse, rat, or
+rabbit — is likely to cross-react with the same protein in *your* species. It compares
+per-region sequence identity (extracellular / transmembrane / intracellular) between your target
+species and each antibody-host species, because whether an antibody binds depends on how
+conserved the specific region it targets is.
+
+Give it a gene and a target species; AbScout finds the orthologs, works out the membrane
+topology, and reports how conserved each region is — and, if you have a specific antibody, how
+conserved that antibody's exact epitope is.
+
+> **AbScout is a prioritisation / screening tool, not a guarantee of binding.** It reports
+> sequence identities for you to interpret. Conformational epitopes, glycosylation, and single
+> hot-spot residues can change reactivity independently of overall identity.
+
+**No installation needed for single cases:** the [web version](https://yuingan.github.io/abscout/)
+runs this same code in your browser (see [Web version](#web-version)).
+
+---
+
+## What it does
+
+- Resolves orthologs of your gene across human, mouse, rat, rabbit **and your target species**
+  (Ensembl Compara), preferring complete over partial sequences.
+- Determines each model protein's membrane topology — curated UniProt annotation where available,
+  TMbed prediction otherwise.
+- Reports **per-region % identity** (extracellular / transmembrane / intracellular / overall)
+  between the target and each model species.
+- Optionally, for a specific antibody: locates its immunogen (paste the peptide **or** give
+  coordinates) and reports the epitope's conservation across species, with a difference-highlighted
+  alignment, per-residue substitution severity, and N-glycosylation changes.
+- Outputs a terminal table, a JSON file, and a self-contained HTML report.
+
+## Web version
+
+<https://yuingan.github.io/abscout/> runs AbScout's own Python files (`abscout.py`,
+`resolve_orthologs.py`, `structure_compare.py`, copied unchanged) inside the browser with
+[Pyodide](https://pyodide.org). Nothing is installed and no AbScout server is involved:
+queries go from the browser straight to Ensembl and UniProt, as they do from the command line.
+The first visit downloads about 15 MB (Python, numpy, Biopython), which the browser then caches.
+
+What it leaves out:
+
+- **TMbed.** Membrane topology comes from UniProt's curated annotation only. A species without
+  one is compared on whole-protein identity (and on the epitope, if given), and the run notes
+  name it. If no species in the run has a curated topology, the regions are reported as
+  unknown; the protein is not assumed to be soluble. For those proteins, use the command line.
+- **Batch mode.** One case at a time.
+
+Everything else (ortholog choice, the curated-entry preference and its checks, region and
+epitope identities, substitutions, glycosylation sequons, the numbering check, the
+region-by-region alignments) is the same code as the command line and gives the same numbers.
+The site is rebuilt from this repository on every push to `main`, after the tests pass
+(`.github/workflows/pages.yml`).
+
+## Installation
+
+AbScout depends on a few bioinformatics packages — notably **TMbed** (a ProtT5-based topology
+predictor). The reliable route is conda:
+
+```bash
+# 1. create the environment
+conda env create -f environment.yml
+conda activate abscout
+
+# 2. install TMbed separately, with --no-deps so it does not override the pinned transformers
+pip install --no-deps git+https://github.com/BernhoferM/TMbed.git
+
+# 3. install AbScout itself (provides the `abscout` command)
+pip install .
+```
+
+**Notes on TMbed**
+
+- It downloads the ProtT5 model (~2–3 GB) on first run, so the first prediction of a session is
+  slow (~20–40 s on CPU); later ones are faster.
+- It requires `transformers==4.30.2` (pinned in `environment.yml`); newer versions break it. The
+  `--no-deps` install in step 2 stops TMbed pulling an incompatible version.
+- On **Windows, use WSL2** — the bioinformatics dependencies are Linux/macOS only — or the
+  web version.
+- **TMbed is optional.** Without it (`pip install .` alone), AbScout still runs: species with a
+  curated UniProt topology are split by region, the others are compared on whole-protein
+  identity, and the run notes say which. This is what the web version does.
+
+## Quick start
+
+```bash
+# CD3E in dog (NCBI taxid 9615), with the immunogen peptide of the CD3-12 antibody
+abscout --gene CD3E --target-taxon 9615 --epitope-seq ERPPPVPNPDYEP --html dog_cd3e.html
+```
+
+The region table from that run (AbScout 0.7.0, November 2026):
+
+```
+Sequence identity to target, by membrane region (%):
+
+  model       extracellular  transmembrane  intracellular   overall
+  human                48.4           65.4           83.6      63.8
+  mouse                48.8           65.4           87.3      61.9
+  rat                  59.5           66.7           82.4      62.2
+  rabbit               45.4           71.4           86.0      61.7
+```
+
+The epitope itself (`ERPPPVPNPDYEP`, intracellular) is 92.3% identical to dog in all four
+species, with one conservative change (R→K).
+
+Extracellular identity is what matters for surface / flow-cytometry / IHC antibodies;
+intracellular for western-blot / lysate antibodies.
+
+## Checking a specific antibody's epitope
+
+Find the **Immunogen** field on the antibody's datasheet and give it to AbScout. Two ways:
+
+**Paste the immunogen peptide** (easiest — AbScout finds where it is *and which species it came
+from*, so you don't have to specify):
+
+```bash
+abscout --gene EGFR --target-taxon 10181 --epitope-seq "CQRLQKDVEKMGVGWKHLGSSKNLKELPMNNL"
+```
+
+**Or give coordinates** (a residue range on a stated species — coordinates only mean something
+relative to a specific sequence):
+
+```bash
+abscout --gene EGFR --target-taxon 10181 --epitope-coor 1005-1036 --epitope-ref human
+```
+
+The epitope section reports each species' coordinates, length, indel count, and identity to the
+target over that region, and shows an alignment with the residues that differ from the target
+highlighted — so you can see exactly which residues might weaken binding.
+
+Two safeguards worth knowing about. A pasted peptide must match a model species at **≥70%** or
+AbScout refuses to place it and reports no epitope — without that floor, a mistyped or
+wrong-species peptide would still land at its best-scoring window and look authoritative. And
+`--epitope-coor` coordinates are validated against the reference length: residue numbers only
+mean something relative to one sequence, and datasheets sometimes number the **mature** protein
+(signal peptide removed) while UniProt numbers from Met1. If the two conventions differ your
+range is silently shifted, so prefer `--epitope-seq` when the datasheet gives a peptide.
+
+## Command-line options
+
+| Option | Description |
+|---|---|
+| `--gene` | Human gene symbol, e.g. `EGFR`. **Required.** |
+| `--target-taxon` | NCBI taxid of your target species, e.g. `7955`. **Required.** |
+| `--epitope-seq` | Immunogen peptide sequence from the datasheet; auto-located. |
+| `--epitope-coor` | Immunogen residue range, e.g. `300-350`, on the reference species. |
+| `--epitope-ref` | Species the `--epitope-coor` numbers refer to (default: `human`). |
+| `--html` | Write a self-contained HTML report to this path. |
+| `--json` | Write the full result as JSON to this path. |
+| `--batch` | CSV of cases to run in one go (see **Batch mode**). |
+| `--batch-out` | Where to write batch results (default `abscout_batch.csv`). |
+| `--timeout` | Ensembl timeout in seconds; raise for large gene families (default 120). |
+| `--no-cache` | Ignore the on-disk cache of sequences and topology. |
+| `--version` | Print the AbScout version. |
+
+Common target taxids: `7955` zebrafish · `10181` naked mole-rat · `9031` chicken · `9823` pig ·
+`9913` cow · `9615` dog · `8364` *Xenopus tropicalis*.
+
+## Batch mode
+
+To run many antibodies/species at once — for a validation set, or just a panel of targets —
+put the cases in a CSV and use `--batch`:
+
+```csv
+case,gene,target_taxon,epitope_coor,epitope_ref,known_outcome
+cetuximab_cyno,EGFR,9541,313-482,human,cross-reactive
+cetuximab_mouse,EGFR,10090,313-482,human,not-cross-reactive
+zo1_1a12_nmr,TJP1,10181,,human,cross-reactive
+```
+
+```bash
+abscout --batch cases.csv --batch-out results.csv
+```
+
+Required columns are `gene` and `target_taxon`; `case`, `epitope_coor`, `epitope_seq` and
+`epitope_ref` are optional. **Any other columns you add (such as `known_outcome`) are copied
+through to the results**, so the output CSV can be analysed directly against ground truth
+without a join. Results are tidy — one row per (case, model species) — with the per-region
+identities, the epitope measures, and coverage.
+
+Three columns carry what the terminal report would otherwise tell you:
+
+- `note` — anything that qualifies the numbers: a model skipped as a partial sequence, an
+  immunogen peptide that matched only approximately or was refused, a range cut to the
+  protein's length, low alignment coverage.
+- `epitope_residues` and `epitope_alt_numbering` — the residues found at the range you gave,
+  and the range and residues under the *other* numbering convention (see **Coordinate
+  numbering**). Compare both with the datasheet before trusting an epitope row.
+- `error` — why a case produced no result. One failing case (an unresolved ortholog, bad
+  coordinates) is recorded and the batch carries on; rows are written as each case finishes,
+  so an interrupted run keeps what it has done.
+
+Two worked examples are included: therapeutic antibodies with structurally mapped epitopes in
+[`validation/validation_cases.csv`](validation/validation_cases.csv), and everyday research
+antibodies with datasheet immunogens in
+[`validation/common_antibodies.csv`](validation/common_antibodies.csv).
+
+## Caching
+
+Sequences and topology never change for a given accession, so AbScout caches them under
+`~/.abscout_cache` (override with `ABSCOUT_CACHE`, disable with `--no-cache`). The first run of
+a protein pays the TMbed cost (~20–40 s); repeat and batch runs are near-instant, which also
+keeps load off the public Ensembl and UniProt APIs. What AbScout *derives* from a UniProt entry
+(topology, how the protein is anchored, signal peptide) is cached per AbScout version, so an
+upgrade that reads entries better re-reads them once; sequences and TMbed predictions are kept.
+
+## Beyond percent identity
+
+Percent identity treats every mismatch alike, but an antibody does not — Leu→Ile is nearly
+invisible to it, while Arg→Glu reverses the charge. Two epitopes at the same identity can
+differ in whether binding survives, so AbScout reports three further measures alongside it.
+
+**Similarity** counts positions that are identical *or* a conservative substitution by
+BLOSUM62, using BLAST's "positives" convention of a strictly positive score. (Score 0 is
+excluded deliberately: Arg→Glu scores 0 yet reverses the charge.)
+
+**Substitution severity** uses the Grantham (1974) physicochemical distance over composition,
+polarity and molecular volume. Values are computed from Grantham's own formula rather than
+transcribed from a table, and the unit tests check them against his published anchors
+(Leu→Ile ≈ 5, Cys→Trp ≈ 215). Substitutions are banded as *conservative* (≤ 50),
+*moderate* (≤ 100) and *radical* (> 100), and each one in the epitope is listed with its
+position, change and class — so a charge reversal at a contact residue is visible rather than
+averaged away.
+
+**N-glycosylation sequons** (N-X-[S/T], X ≠ P) are compared between the immunogen species and
+the target across the epitope. A glycan is bulky and can physically block antibody access, so
+a sequon *gained* in the target can abolish binding even at 95% identity — a failure mode
+sequence identity cannot see at all.
+
+None of these makes the output a binding prediction; they make the reasons behind a percentage
+visible.
+
+## Coordinate numbering
+
+Residue numbers only mean something relative to one sequence. UniProt counts from Met1, while
+datasheets sometimes number the **mature** protein — after the signal peptide, and after the
+propeptide where there is one. The shift is 24 residues for EGFR and 154 for E-cadherin, enough
+to point at the wrong region entirely.
+
+A real example: a widely used anti-CD3 immunogen is printed on datasheets as "aa 156-168
+(ERPPPVPNPDYEP) from human CD3 epsilon (UniProt P07766)". In the UniProt sequence that peptide
+is at **178-190**; residues 156-168 are `KAKAKPVTRGAGA`. The datasheet is counting from the
+mature protein (22-residue signal peptide removed). Taken at face value the range gives 92%
+identity to mouse for the wrong thirteen residues, instead of 100% for the right ones.
+
+When you pass `--epitope-coor`, AbScout therefore:
+
+- validates the range against the reference length (an out-of-range start is an error, an
+  overhanging end is cut and noted);
+- prints the residues actually found at that range;
+- reads the mature-chain start from UniProt (signal peptide, propeptide, or a removed initiator
+  methionine) and prints the range *and residues* under the mature-numbering reading too — or
+  says that reading is impossible when it would run past the end of the protein.
+
+Compare both sets of residues with the datasheet and re-run with the second range if that is
+the one that matches. Passing the immunogen peptide with `--epitope-seq` avoids the ambiguity
+entirely and is the better route whenever the datasheet gives a sequence — including when the
+peptide carries a non-native linker residue such as a terminal cysteine, which simply shows up
+as a match slightly under 100%.
+
+The epitope reference must be one of the species compared in the run. If it is not (it is the
+target itself, or its ortholog was skipped as a partial sequence), AbScout stops and lists the
+species that are available rather than reading your coordinates against a different sequence.
+
+## How to read the output
+
+- **Region table** — % sequence identity between each antibody-host species and your target,
+  split by membrane region. Higher means more conserved, so an antibody targeting that region is
+  more likely to cross-react.
+- **Epitope table** (if an epitope is given) — the same, restricted to the antibody's actual
+  immunogen region, with per-species coordinates, length, and an **indel count**. Identity is
+  computed over columns present in both species, so an insertion or deletion is excluded from
+  the percentage rather than counted against it — a deletion inside an epitope can therefore
+  sit behind a high identity. Read the indel count alongside the percentage: an indel reshapes
+  the local backbone and is usually more disruptive to binding than a substitution.
+- **Alignment** — the epitope residues across species, with differences from the target
+  highlighted.
+- **Membrane regions, residue by residue** (HTML and JSON) — separate Extracellular,
+  Transmembrane and Intracellular sections. Each segment is defined on the human topology (or
+  the first model species with a topology) and aligned across every species, like the epitope:
+  per-species coordinates, length, indel count and identity to the target, then the residues
+  with differences from the target highlighted. A multi-pass protein gets one block per loop
+  or helix. Identities here are measured on the reference-defined segments, so they can differ
+  slightly from the region table, which uses each species' own topology. GPI-anchored proteins
+  show only an extracellular section; soluble proteins have none.
+- **Similarity / radical substitutions** — see **Beyond percent identity** above. A large gap
+  between identity and similarity means the differences are mostly conservative; a non-zero
+  radical count points at the specific changes most likely to matter.
+- **Coverage** — the fraction of the reference protein that actually aligned. Identity is
+  computed over aligned positions only, so a partial or divergent sequence can show high
+  identity over a small part of the protein; AbScout flags coverage below 80%.
+
+There is deliberately **no verdict** — the percentages are yours to interpret. A common vendor
+rule of thumb is that ~85% identity in the relevant region suggests likely cross-reactivity, but
+this threshold is not calibrated here.
+
+## Limitations
+
+- Sequence identity is a *proxy* for epitope conservation. It cannot see conformational epitopes
+  (residues far apart in sequence but adjacent in 3D), differential glycosylation, or single
+  hot-spot residues that dominate binding.
+- The ~85% rule of thumb is borrowed, not validated in this tool.
+- Orthologs come from Ensembl Compara; species outside Ensembl's vertebrate set will not resolve.
+- Requires internet access (queries Ensembl and UniProt).
+- Epitope identity is reference-anchored: each species is projected onto the reference's epitope
+  columns rather than aligned directly to the target, which is what makes the columns comparable
+  when species carry different indels.
+- For soluble (non-membrane) proteins the extracellular/transmembrane/intracellular split does
+  not apply; AbScout detects this and reports whole-protein identity instead.
+- **GPI-anchored proteins** (CD90/THY1, CD59, CD73, PrP and other common surface targets) are
+  tethered to the outer leaflet by a lipid rather than a transmembrane helix, so a predictor
+  finds no helix and would call them soluble. Where UniProt annotates the GPI anchor, AbScout
+  reports the mature chain as entirely extracellular and labels the source
+  `UniProt (GPI-anchored)`. The cleaved C-terminal GPI attachment signal is excluded.
+- **Curated entries are preferred.** Compara's cross-reference sometimes points at an
+  unreviewed TrEMBL model even where a curated Swiss-Prot entry exists, and those models can
+  be wrong exactly where it matters: dog CD3E `A0A8I3MGF0` has a mispredicted C-terminus that
+  drops the conserved `ERPPPVPNPDYEP` epitope (30.8% identity) where the reviewed `P27597`
+  retains it (92.3%). AbScout prefers a reviewed entry, but only after checking it against
+  the other species — see below.
+- **Every sequence found by gene symbol is checked.** UniProt's symbol search matches
+  synonyms: asking for human `CDH1` returns `Q9UM11`, which is FZR1, not E-cadherin. Any step
+  that could pull in a same-named protein (the curated-entry preference and the partial-length
+  rescue) first checks that the candidate resembles the other species in the run, and refuses
+  it otherwise. A sequence resembling none of the others is flagged in the notes for manual
+  checking rather than silently used.
+- **No ortholog found**: if Ensembl Compara returns no ortholog for the target species,
+  AbScout stops and says so. It deliberately does not fall back to matching on gene symbol,
+  because a gene with the same name is not necessarily the ortholog and a wrong target
+  sequence would silently distort every identity in the run. Check such cases by hand.
+
+- **Withdrawn UniProt entries.** Ensembl's cross-reference can point at a UniProt entry that
+  has since been deleted (naked mole-rat THY1 resolves to `A0A0P6J0R8`, deleted as "not part
+  of a reference proteome"). AbScout then stops and names the deleted entry instead of running
+  on an empty sequence. Check such cases by hand.
+
+## Components
+
+- `abscout.py` — the driver (ortholog resolution → topology → per-region comparison → report).
+- `resolve_orthologs.py` — Ensembl Compara ortholog resolution to UniProt accessions.
+- `structure_compare.py` — sequence-based per-region comparison; also a standalone
+  structure-based comparison (lDDT/RMSD) for a pair that both have AlphaFold structures
+  (needs the optional `tmtools`).
+- `web/` — the web version: `index.html` (the page), `worker.js` (loads Pyodide and runs the
+  Python files above), `build_site.py` (assembles the site, copying the Python files as-is).
+
+## Development
+
+```bash
+python test_abscout.py
+python test_resolve_orthologs.py
+python test_structure_compare.py
+```
+
+The tests stub every Ensembl/UniProt call, so they need no network and no TMbed; GitHub Actions
+runs them on every push (`.github/workflows/tests.yml`).
+
+To try the web version locally before pushing:
+
+```bash
+python web/build_site.py               # writes _site/
+python -m http.server -d _site 8000    # then open http://localhost:8000
+```
+
+## Citing
+
+If AbScout is useful in your work, please cite the repository / its archived DOI
+(see `CITATION.cff`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

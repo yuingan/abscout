@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "AbScout: cross-species antibody cross-reactivity prediction for membrane proteins"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: "Wing Yui"
+    family-names: "Ngan"
+    affiliation: "University of Cambridge"
+repository-code: "https://github.com/yuingan/abscout"
+url: "https://yuingan.github.io/abscout/"
+license: MIT
+version: 0.8.0
+keywords:
+  - antibody
+  - cross-reactivity
+  - membrane protein
+  - bioinformatics

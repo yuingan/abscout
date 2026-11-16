@@ -1,0 +1,25 @@
+name: abscout
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - requests
+  - biopython
+  - pip:
+      # ---- TMbed (ProtT5) runtime stack -- versions pinned to what TMbed needs ----
+      - torch
+      - transformers==4.30.2      # newer versions break TMbed (batch_encode_plus removed)
+      - tokenizers==0.13.3
+      - huggingface_hub
+      - sentencepiece             # ProtT5 tokenizer
+      - protobuf
+      # ---- optional: enables the standalone structural comparison in structure_compare.py ----
+      - tmtools
+
+# After `conda env create -f environment.yml` and `conda activate abscout`, install TMbed with:
+#     pip install --no-deps git+https://github.com/BernhoferM/TMbed.git
+# (--no-deps prevents TMbed from overriding the pinned transformers above)
+# then install AbScout itself with:  pip install .
