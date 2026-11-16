@@ -332,6 +332,12 @@ this threshold is not calibrated here.
   AbScout stops and says so. It deliberately does not fall back to matching on gene symbol,
   because a gene with the same name is not necessarily the ortholog and a wrong target
   sequence would silently distort every identity in the run. Check such cases by hand.
+- **Genomes outside Compara.** Some genomes are in Ensembl but not in Compara's gene trees, so
+  no gene has a Compara ortholog there. In November 2026 these included the Damara mole-rat
+  (*Fukomys damarensis*, 885580) and the paternal naked mole-rat assembly (the maternal one,
+  which AbScout uses for 10181, is included). AbScout says so instead of giving a per-gene
+  message. To check a species: `https://rest.ensembl.org/info/genomes/taxonomy/<taxid>?content-type=application/json`
+  and look at `has_peptide_compara`.
 
 - **Withdrawn UniProt entries.** Ensembl's cross-reference can point at a UniProt entry that
   has since been deleted (naked mole-rat THY1 resolves to `A0A0P6J0R8`, deleted as "not part

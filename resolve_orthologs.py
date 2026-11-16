@@ -77,6 +77,28 @@ def ensembl_get(path, params=None):
     return None
 
 
+def compara_genomes(taxid):
+    """
+    The Ensembl genomes for a taxon as [(display_name, name, in_compara)], [] when Ensembl
+    has none, or None when Ensembl could not be asked. A genome that is in Ensembl but not in
+    Compara's gene trees (has_peptide_compara = 0) has no Compara orthologs for any gene --
+    the Damara mole-rat, for one, and the paternal naked mole-rat assembly.
+    """
+    resp = ensembl_get(f"/info/genomes/taxonomy/{taxid}")
+    if resp is None:
+        return None
+    return parse_genomes(resp)
+
+
+def parse_genomes(resp):
+    out = []
+    for g in resp if isinstance(resp, list) else []:
+        flag = str(g.get("has_peptide_compara", "0")).strip().lower()
+        out.append((g.get("display_name") or g.get("name", "?"), g.get("name", "?"),
+                    flag not in ("0", "", "none", "false")))
+    return out
+
+
 # ----------------------------------------------------------------------------------
 # Parsing (pure functions -- unit-tested)
 # ----------------------------------------------------------------------------------
@@ -228,7 +250,10 @@ def resolve(gene, target_taxid):
     src_gene, homs = parse_homologies(resp)
 
     result = {"gene": gene, "query_species": "homo_sapiens",
-              "human_gene_id": src_gene, "target_taxid": target_taxid, "orthologs": []}
+              "human_gene_id": src_gene, "target_taxid": target_taxid, "orthologs": [],
+              # False when Ensembl gave no answer at all (request failed, or the symbol is
+              # not one it recognises) -- not the same as "no ortholog in that species"
+              "homology_query_ok": resp is not None}
 
     def add(species, taxid, ensembl_gene, protein_id, otype):
         eid = protein_id or ensembl_gene

@@ -164,6 +164,28 @@ def test_reviewed_partial_is_upgraded_within_swissprot():
     print("reviewed-partial upgrade OK: 496aa -> 882aa, stays within Swiss-Prot")
 
 
+def test_compara_coverage_from_ensembl_genome_info():
+    """Shapes of the real /info/genomes/taxonomy answers (Nov 2026): the Damara mole-rat
+    genome is in Ensembl but not in Compara; of the two naked mole-rat assemblies only the
+    maternal one is."""
+    dmr = [{"name": "fukomys_damarensis", "display_name": "Damara mole rat",
+            "assembly_name": "DMR_v1.0", "taxonomy_id": 885580, "has_peptide_compara": 0}]
+    nmr = [{"name": "heterocephalus_glaber_female", "display_name": "Naked mole-rat female",
+            "has_peptide_compara": 1},
+           {"name": "heterocephalus_glaber_male", "display_name": "Naked mole-rat male",
+            "has_peptide_compara": 0}]
+    assert ro.parse_genomes(dmr) == [("Damara mole rat", "fukomys_damarensis", False)]
+    assert [g[2] for g in ro.parse_genomes(nmr)] == [True, False]
+    assert ro.parse_genomes({"error": "x"}) == []
+    saved = ro.ensembl_get
+    try:
+        ro.ensembl_get = lambda path, params=None: None
+        assert ro.compara_genomes(885580) is None, "no answer is not 'no genome'"
+    finally:
+        ro.ensembl_get = saved
+    print("compara coverage OK: Damara mole-rat genome recognised as outside Compara")
+
+
 if __name__ == "__main__":
     test_parse_homologies_condensed()
     test_parse_homologies_nested()
@@ -173,4 +195,5 @@ if __name__ == "__main__":
     test_partial_upgrade()
     test_xref_selection_is_deterministic()
     test_reviewed_partial_is_upgraded_within_swissprot()
+    test_compara_coverage_from_ensembl_genome_info()
     print("\nALL RESOLVE-ORTHOLOGS TESTS PASSED")

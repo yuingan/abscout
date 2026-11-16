@@ -974,6 +974,56 @@ def test_without_tmbed_nothing_curated_is_unknown_not_soluble():
     print("no-TMbed OK: nothing curated -> 'topology unknown', never 'soluble'")
 
 
+def test_no_target_message_says_why():
+    """Real case: TP53 in the Damara mole-rat (885580). Ensembl has that genome but not in
+    Compara, so no gene can resolve there; the message should say so rather than suggest a
+    per-gene manual check, and the web page must not suggest a command-line option."""
+    import resolve_orthologs as ro
+    human_only = {"orthologs": [_orth("human", "P04637", "reviewed", 9606)],
+                  "homology_query_ok": True}
+    saved = (ro.compara_genomes, ab.IN_BROWSER)
+    try:
+        ro.compara_genomes = lambda t: [("Damara mole rat", "fukomys_damarensis", False)]
+        m = ab.no_target_message("TP53", 885580, human_only)
+        assert "Damara mole rat (fukomys_damarensis)" in m and "Compara's gene trees" in m, m
+        assert "--timeout" not in m, "a timeout cannot explain a genome outside Compara"
+
+        ro.compara_genomes = lambda t: [("Naked mole-rat female", "heterocephalus_glaber_female",
+                                         True)]
+        m = ab.no_target_message("XYZ1", 10181, human_only)
+        assert m.startswith("No Compara ortholog for XYZ1 in taxid 10181") and "--timeout" in m, m
+        ab.IN_BROWSER = True
+        m = ab.no_target_message("XYZ1", 10181, human_only)
+        assert "--timeout" not in m and "run it again" in m, m
+        ab.IN_BROWSER = False
+
+        ro.compara_genomes = lambda t: []
+        m = ab.no_target_message("TP53", 123456789, human_only)
+        assert "no genome for taxid 123456789" in m, m
+
+        m = ab.no_target_message("TP53", 9615, {"orthologs": [], "homology_query_ok": False})
+        assert "Ensembl returned no orthologs for TP53" in m, m
+
+        no_xref = {"orthologs": [dict(_orth("dog", None, None, 9615, True),
+                                      ensembl_gene="ENSCAFG00845012345")],
+                   "homology_query_ok": True}
+        m = ab.no_target_message("TP53", 9615, no_xref)
+        assert "Compara has a TP53 ortholog" in m and "no UniProt entry" in m, m
+
+        # and analyze() really stops with it
+        ro.compara_genomes = lambda t: [("Damara mole rat", "fukomys_damarensis", False)]
+        try:
+            _stub_run(ro, [_orth("human", "P07766", "reviewed", 9606)], REAL)
+        except ab.AbScoutError as e:
+            assert "Compara's gene trees" in str(e), str(e)
+        else:
+            raise AssertionError("no target must stop the run")
+    finally:
+        ro.compara_genomes, ab.IN_BROWSER = saved
+    print("no-target OK: species outside Compara, unknown taxon, failed query and missing "
+          "UniProt entry each get their own message")
+
+
 if __name__ == "__main__":
     test_region_table_no_recommendation()
     test_handles_missing_region_and_paralogs()
@@ -1024,4 +1074,5 @@ if __name__ == "__main__":
     test_deleted_uniprot_entry_is_reported_not_used()
     test_without_tmbed_uncurated_species_keeps_whole_protein_numbers()
     test_without_tmbed_nothing_curated_is_unknown_not_soluble()
+    test_no_target_message_says_why()
     print("\nALL ABSCOUT TESTS PASSED")

@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -707,18 +707,42 @@ def detect_epitope_from_peptide(model_seqs, peptide, min_match=MIN_PEPTIDE_MATCH
     return best
 
 
+def no_target_message(gene, taxid, resolved):
+    """Why there is no target sequence, as precisely as Ensembl lets us say."""
+    no_name_match = (" AbScout does not fall back to matching on gene name, because a gene "
+                     "with the same symbol is not necessarily the ortholog and a wrong sequence "
+                     "here would silently distort every identity in the run.")
+    slow = (" If the run log shows Ensembl timing out, run it again." if IN_BROWSER else
+            " If Ensembl timed out above, the family may just be slow: retry with --timeout 300.")
+    found = [o for o in resolved.get("orthologs", []) if o.get("is_target")]
+    if found:
+        o = found[0]
+        return (f"Ensembl Compara has a {gene} ortholog in taxid {taxid} ({o['species']}, "
+                f"{o.get('ensembl_gene') or 'no gene ID'}), but no UniProt entry could be found "
+                f"for it, so there is no sequence to compare. Please check it manually.")
+    if not resolved.get("homology_query_ok", True):
+        return (f"Ensembl returned no orthologs for {gene}: either the request failed or "
+                f"{gene} is not a human gene symbol Ensembl recognises." + slow)
+    genomes = ro.compara_genomes(taxid)
+    if genomes == []:
+        return (f"Ensembl has no genome for taxid {taxid}, so it has no orthologs there. "
+                f"Check the taxon ID (NCBI Taxonomy).")
+    if genomes and not any(in_compara for _, _, in_compara in genomes):
+        names = " and ".join(f"{d} ({n})" for d, n, _ in genomes)
+        return (f"Ensembl has the {names} genome but does not include it in Compara's gene "
+                f"trees, so no gene has a Compara ortholog in taxid {taxid}, {gene} included."
+                + no_name_match)
+    return (f"No Compara ortholog for {gene} in taxid {taxid} -- please check it manually."
+            + no_name_match + slow)
+
+
 def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope_seq=None):
     resolved = ro.resolve(gene, target_taxid)
     orths = resolved["orthologs"]
     targets = [o for o in orths if o["is_target"] and o["uniprot"]]
     models = [o for o in orths if not o["is_target"] and o["uniprot"]]
     if not targets:
-        raise AbScoutError(
-            f"No Compara ortholog for {gene} in taxid {target_taxid} -- please check it "
-            f"manually. AbScout does not fall back to matching on gene name, because a gene "
-            f"with the same symbol is not necessarily the ortholog and a wrong sequence here "
-            f"would silently distort every identity in the run. If Ensembl timed out above, "
-            f"the family may just be slow: retry with --timeout 300.")
+        raise AbScoutError(no_target_message(gene, target_taxid, resolved))
     notes = []                  # everything that qualifies the numbers; travels to JSON / CSV
 
     # ---- the target sequence --------------------------------------------------------------
