@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -1338,9 +1338,9 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
 
     def cell(pct):
         if pct is None:
-            return '<td style="background:#eef0f2;color:#8a919a">n/a</td>'
-        c = "#1b9e57" if pct >= 85 else "#e0972a" if pct >= 70 else "#cf3b3b"
-        return f'<td style="background:{c};color:#fff;font-weight:600">{pct:.1f}%</td>'
+            return '<td style="background:#eef0f2;color:#000">n/a</td>'
+        c = "#1b9e57" if pct >= 85 else "#e0972a" if pct >= 70 else "#e05555"
+        return f'<td style="background:{c};color:#000;font-weight:600">{pct:.1f}%</td>'
 
     def cell2(pct, whole):
         """Identity over aligned residues, with the identity that counts residues present in
@@ -1467,22 +1467,22 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
         for row in epitope_info["rows"]:
             ident = row["identity_to_target"]
             id_cell = (cell(ident) if ident is not None
-                       else '<td style="background:#eef0f2;color:#8a919a">&mdash;</td>')
+                       else '<td style="background:#eef0f2;color:#000">&mdash;</td>')
             if row.get("absent") and row["common"] != "target":
-                id_cell = ('<td style="background:#eef0f2;color:#6b7280" title="No residue of this '
+                id_cell = ('<td style="background:#eef0f2;color:#000" title="No residue of this '
                            'ortholog aligns to the epitope; the entry is probably truncated '
                            'there. This is not 0%.">absent</td>')
             name = "Target" if row["common"] == "target" else row["common"].capitalize()
             gaps = row.get("gaps_vs_target")
-            gcell = ('<td style="background:#eef0f2;color:#8a919a">&mdash;</td>' if gaps is None
-                     else (f'<td style="color:#b91c1c;font-weight:700">{gaps}</td>' if gaps
+            gcell = ('<td style="background:#eef0f2;color:#000">&mdash;</td>' if gaps is None
+                     else (f'<td style="background:#f7b4b4;color:#000;font-weight:700">{gaps}</td>' if gaps
                            else '<td>0</td>'))
             sim = row.get("similarity_to_target")
             scell = (cell(sim) if sim is not None
-                     else '<td style="background:#eef0f2;color:#8a919a">&mdash;</td>')
+                     else '<td style="background:#eef0f2;color:#000">&mdash;</td>')
             rad = row.get("radical_subs")
-            rcell = ('<td style="background:#eef0f2;color:#8a919a">&mdash;</td>' if rad is None
-                     else (f'<td style="color:#b91c1c;font-weight:700">{rad}</td>' if rad
+            rcell = ('<td style="background:#eef0f2;color:#000">&mdash;</td>' if rad is None
+                     else (f'<td style="background:#f7b4b4;color:#000;font-weight:700">{rad}</td>' if rad
                            else '<td>0</td>'))
             erows += (f'<tr><td class="lbl">{name}</td><td>{row["coordinates"]}</td>'
                       f'<td>{row["length"]}</td>{gcell}{id_cell}{scell}{rcell}</tr>')
@@ -1500,11 +1500,13 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
             srows = ""
             for s in subs:
                 g = "&mdash;" if s["grantham"] is None else f'{s["grantham"]:.0f}'
-                colour = {"radical": "#b91c1c", "moderate": "#b45309",
-                          "conservative": "#15803d"}.get(s["class"], "#6b7280")
+                # black words; the class colour is carried by a light background
+                tint = {"radical": "#f7b4b4", "moderate": "#fde3c0",
+                        "conservative": "#c8ecd5"}.get(s["class"], "#eef0f2")
                 srows += (f'<tr><td>{s["position"]}</td>'
                           f'<td><b>{s["from"]}&rarr;{s["to"]}</b></td><td>{g}</td>'
-                          f'<td style="color:{colour};font-weight:600">{s["class"]}</td></tr>')
+                          f'<td style="background:{tint};color:#000;font-weight:600">'
+                          f'{s["class"]}</td></tr>')
             subs_html = (f'<h2 style="margin-top:16px">Substitutions '
                          f'({epitope_info["ref"]} &rarr; target)</h2>'
                          f'<table><tr><th>Position</th><th>Change</th><th>Grantham</th>'
@@ -1520,7 +1522,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
             if gl.get("lost_in_target"):
                 bits.append("<b>lost</b> in target at " +
                             ", ".join(str(p) for p in gl["lost_in_target"]))
-            glyco_html = (f'<p class="sub" style="color:#b45309">N-glycosylation sequon '
+            glyco_html = (f'<p class="sub" style="color:#000">N-glycosylation sequon '
                           f'(N-X-S/T) {"; ".join(bits)} ({epitope_info["ref"]} numbering). '
                           f'A glycan can physically block antibody access, so this can change '
                           f'reactivity independently of sequence identity.</p>')
@@ -1570,7 +1572,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
                 label = "target" if n == "target" else n
                 arows += f'<div><span class="al">{label}</span>{spans}</div>'
             aln_html = (f'<h2 style="margin-top:16px">Epitope alignment</h2>'
-                        f'<p class="sub">Red = residue differs from the target</p>'
+                        f'<p class="sub">Red background = residue differs from the target</p>'
                         f'<div class="aln">{arows}</div>')
         ep_html = (f'<h2 style="margin-top:20px">Antibody epitope region</h2>'
                    f'<p class="sub">Defined on {epitope_info["ref"]}, residues {er[0]}&ndash;{er[1]}'
@@ -1641,7 +1643,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
         regions_html = (
             '<h2 style="margin-top:22px">Membrane regions, residue by residue</h2>'
             f'<p class="sub">Each region as defined on the {ref} topology, aligned across species. '
-            'Red = residue differs from the target. Long segments are collapsed: click to open. '
+            'Red background = residue differs from the target. Long segments are collapsed: click to open. '
             'Identities here are measured on these reference-defined segments, so they can '
             'differ slightly from the table above, where a species with its own curated '
             'topology uses that one.</p>' + "".join(parts))
@@ -1656,27 +1658,28 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AbScout &mdash; {gene} in {target["species"]}</title>
 <style>
- body{{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;max-width:820px;margin:28px auto;padding:0 18px;line-height:1.5}}
- h1{{font-size:22px;margin:0 0 2px}} .sub{{color:#6b7280;margin:0 0 16px;font-size:14px}}
+ body{{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#000;max-width:820px;margin:28px auto;padding:0 18px;line-height:1.5}}
+ h1{{font-size:22px;margin:0 0 2px}} .sub{{color:#000;margin:0 0 16px;font-size:14px}}
  h2{{font-size:16px;margin:0 0 6px}}
  table{{border-collapse:collapse;width:100%;margin:16px 0}}
  th,td{{border:1px solid #e5e7eb;padding:9px 10px;text-align:center;font-size:14px}}
  th{{background:#f7f8fa;font-weight:600}} td.lbl,th:first-child{{text-align:left}}
- .acc{{display:block;font-weight:400;color:#9aa0a6;font-size:12px}}
- .legend span{{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-size:12px;margin:0 4px 4px 0}}
+ .acc{{display:block;font-weight:400;color:#000;font-size:12px}}
+ .legend span{{display:inline-block;padding:2px 8px;border-radius:4px;color:#000;font-size:12px;margin:0 4px 4px 0}}
  .aln{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.7;overflow-x:auto;white-space:pre;background:#fafafa;border:1px solid #eee;border-radius:6px;padding:8px}}
- .aln .al{{display:inline-block;width:64px;color:#6b7280}}
- .aln .d{{background:#fde2e2;color:#b91c1c;font-weight:700}}
- .numbox{{background:#fffbeb;border:1px solid #f3d38a;border-radius:6px;padding:9px 12px;color:#4b5563}}
- code{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:#111}}
+ .aln .al{{display:inline-block;width:64px;color:#000}}
+ .aln .d{{background:#f7b4b4;color:#000;font-weight:700}}
+ .numbox{{background:#fffbeb;border:1px solid #f3d38a;border-radius:6px;padding:9px 12px;color:#000}}
+ code{{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:#000}}
  h3{{font-size:15px;margin:18px 0 6px}}
  details.seg{{border:1px solid #e5e7eb;border-radius:6px;padding:6px 12px;margin:8px 0}}
  details.seg summary{{cursor:pointer;font-weight:600;font-size:14px;padding:2px 0}}
- .aln .pos{{color:#9aa0a6;font-size:11px;margin-top:6px}}
- .notes{{background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 14px;margin:14px 0;font-size:13px;color:#334155}}
+ .aln .pos{{color:#000;font-size:11px;margin-top:6px}}
+ .notes{{background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 14px;margin:14px 0;font-size:13px;color:#000}}
  .notes ul{{margin:4px 0 2px 18px;padding:0}} .notes li{{margin:3px 0}}
- .caveat{{color:#6b7280;font-size:12px;border-top:1px solid #e5e7eb;padding-top:12px;margin-top:22px}}
+ .caveat{{color:#000;font-size:12px;border-top:1px solid #e5e7eb;padding-top:12px;margin-top:22px}}
  .whole{{font-size:11px;font-weight:400;opacity:.92;margin-top:2px}}
+ a{{color:#000;text-decoration:underline}}
 </style></head><body>
 <h1>AbScout &mdash; {gene} in <i>{target["species"]}</i></h1>
 <p class="sub">Target protein {target["uniprot"]}</p>
@@ -1684,8 +1687,8 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
 <div class="legend">Sequence identity to target:
  <span style="background:#1b9e57">&ge;85%</span>
  <span style="background:#e0972a">70&ndash;85%</span>
- <span style="background:#cf3b3b">&lt;70%</span>
- <span style="background:#eef0f2;color:#8a919a">n/a</span></div>
+ <span style="background:#e05555">&lt;70%</span>
+ <span style="background:#eef0f2;color:#000">n/a</span></div>
 {main_table}
 {tmap_html}
 {unmatched_html}

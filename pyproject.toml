@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "abscout"
-version = "0.9.1"
+version = "0.9.2"
 description = "Predict cross-species antibody cross-reactivity for membrane proteins by per-region sequence identity"
 readme = "README.md"
 requires-python = ">=3.9"
