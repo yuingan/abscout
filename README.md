@@ -25,8 +25,11 @@ runs this same code in your browser (see [Web version](#web-version)).
 
 - Resolves orthologs of your gene across human, mouse, rat, rabbit **and your target species**
   (Ensembl Compara), preferring complete over partial sequences.
-- Determines each model protein's membrane topology — curated UniProt annotation where available,
-  TMbed prediction otherwise.
+- Determines each model protein's membrane topology, best evidence first: its own curated
+  UniProt annotation; otherwise the curated topology of the first species that has one, in the
+  order human → mouse → rat → rabbit, carried across through the alignment; "soluble" when no
+  species' entry annotates a membrane segment and at least one of them is a reviewed
+  (Swiss-Prot) entry; TMbed prediction only when none of these applies.
 - Reports **per-region % identity** (extracellular / transmembrane / intracellular / overall)
   between the target and each model species.
 - Optionally, for a specific antibody: locates its immunogen (paste the peptide **or** give
@@ -44,10 +47,10 @@ The first visit downloads about 15 MB (Python, numpy, Biopython), which the brow
 
 What it leaves out:
 
-- **TMbed.** Membrane topology comes from UniProt's curated annotation only. A species without
-  one is compared on whole-protein identity (and on the epitope, if given), and the run notes
-  name it. If no species in the run has a curated topology, the regions are reported as
-  unknown; the protein is not assumed to be soluble. For those proteins, use the command line.
+- **TMbed.** It is only needed when no species in the run has a curated topology and no
+  reviewed entry rules out a membrane segment; a species without its own curated topology
+  borrows one exactly as on the command line. In that remaining case the web version reports
+  the regions as unknown (the protein is not assumed to be soluble); use the command line.
 - **Batch mode.** One case at a time.
 
 Everything else (ortholog choice, the curated-entry preference and its checks, region and
@@ -81,9 +84,10 @@ pip install .
   `--no-deps` install in step 2 stops TMbed pulling an incompatible version.
 - On **Windows, use WSL2** — the bioinformatics dependencies are Linux/macOS only — or the
   web version.
-- **TMbed is optional.** Without it (`pip install .` alone), AbScout still runs: species with a
-  curated UniProt topology are split by region, the others are compared on whole-protein
-  identity, and the run notes say which. This is what the web version does.
+- **TMbed is optional.** Without it (`pip install .` alone), AbScout still runs and gives the
+  same numbers whenever any species has a curated topology to borrow, or a reviewed entry shows
+  the protein is soluble. Only when neither applies are the regions reported as unknown. This
+  is what the web version does.
 
 ## Quick start
 
@@ -270,7 +274,20 @@ species that are available rather than reading your coordinates against a differ
 
 - **Region table** — % sequence identity between each antibody-host species and your target,
   split by membrane region. Higher means more conserved, so an antibody targeting that region is
-  more likely to cross-react.
+  more likely to cross-react. Each cell is identity over aligned residues; where some residues
+  are present in only one of the two proteins, a second figure ("counting unmatched") counts
+  them as differences, so a protein of very different length shows up as different. The
+  `topology` line under each species says where its regions came from (its own UniProt entry,
+  or borrowed from another species).
+- **Target sequence by region** — the whole target, in its own numbering, mapped onto the
+  reference topology through the alignment: which stretch is extracellular, transmembrane,
+  intracellular or signal peptide, and which have no counterpart in the reference.
+- **Residues present in only one protein** — every stretch with no counterpart in the other
+  protein: who has it, its residues, its length, whether it is N-terminal, C-terminal or
+  internal, and its region. A stretch inside one region is placed in it; one at a terminus or a
+  region boundary is not placed. Example: Ensembl's naked mole-rat THY1 is 256 aa against
+  161 aa in the other species, and its first 95 residues have no counterpart in any of them.
+  That may be real biology or a gene-model error; AbScout shows it rather than deciding.
 - **Epitope table** (if an epitope is given) — the same, restricted to the antibody's actual
   immunogen region, with per-species coordinates, length, and an **indel count**. Identity is
   computed over columns present in both species, so an insertion or deletion is excluded from
@@ -284,9 +301,11 @@ species that are available rather than reading your coordinates against a differ
   the first model species with a topology) and aligned across every species, like the epitope:
   per-species coordinates, length, indel count and identity to the target, then the residues
   with differences from the target highlighted. A multi-pass protein gets one block per loop
-  or helix. Identities here are measured on the reference-defined segments, so they can differ
-  slightly from the region table, which uses each species' own topology. GPI-anchored proteins
-  show only an extracellular section; soluble proteins have none.
+  or helix. The reference is the species whose topology is borrowed (the first curated one in
+  the order human → mouse → rat → rabbit). Identities here are measured on the
+  reference-defined segments, so they can differ slightly from the region table, where a
+  species with its own curated topology uses that one. GPI-anchored proteins show only an
+  extracellular section; soluble proteins have none.
 - **Similarity / radical substitutions** — see **Beyond percent identity** above. A large gap
   between identity and similarity means the differences are mostly conservative; a non-zero
   radical count points at the specific changes most likely to matter.
@@ -346,7 +365,14 @@ this threshold is not calibrated here.
   the usual Swiss-Prot step still replaces it with a reviewed entry when one exists and
   resembles the other species at least as well (dog TP53 -> `Q29537`). Nothing is matched on
   gene name alone. Ensembl sequences have no UniProt topology, so a model species taken from
-  Ensembl gets TMbed's prediction, or whole-protein identity where TMbed is not available.
+  Ensembl borrows one like any other species without its own.
+- **Borrowed topology** assumes orthologs share their membrane topology, which is the norm. The
+  borrowed boundaries land where the alignment puts them (mouse CD3E's borrowed helix falls at
+  109-134, exactly where mouse's own UniProt entry puts it), but a species-specific change in
+  topology would not be seen.
+- **Alignment ends are free** (semi-global): an extension at one end of a protein is not forced
+  into alignment with the other protein's start, so it stays one stretch. Orthologs of similar
+  length give the same numbers either way.
 
 ## Components
 

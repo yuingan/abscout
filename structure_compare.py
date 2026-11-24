@@ -307,6 +307,12 @@ def correspondence_seq(A, B):
     aligner.substitution_matrix = _BLOSUM62
     aligner.open_gap_score = -11
     aligner.extend_gap_score = -1
+    # Overhanging ends are free (semi-global): two orthologs of different length should line
+    # up where they are homologous, and an extension at one end should stay one stretch.
+    # When ends cost like internal gaps, a 95-residue N-terminal extension was split, with a
+    # few of its residues pulled onto the other protein's start. Orthologs of similar length
+    # give the same numbers either way (CD3E human/mouse/rabbit vs dog: identical).
+    aligner.end_gap_score = 0
     aln = aligner.align(A["seq"], B["seq"])[0]
     pairs = []
     for (a0, a1), (b0, b1) in zip(*aln.aligned):
@@ -394,6 +400,125 @@ def compare(A, B, ref_topology=None):
 # ----------------------------------------------------------------------------------
 # Sequence-only comparison (no structures needed) -- AbScout's core output
 # ----------------------------------------------------------------------------------
+def _runs(idx):
+    """Consecutive runs in a sorted list of indices, as (first, last) pairs."""
+    out = []
+    for i in idx:
+        if out and i == out[-1][1] + 1:
+            out[-1][1] = i
+        else:
+            out.append([i, i])
+    return [tuple(r) for r in out]
+
+
+def unmatched_residues(seqA, seqB, pairs, regions=None):
+    """
+    Residues present in only one of two aligned proteins, as stretches with where they are
+    and how long they are. A is the reference (a model species), B the target.
+
+    Target-only stretches take a region only when the aligned residues on both sides of them
+    lie in the same region (an insertion inside that region); a stretch at a terminus, or at
+    a region boundary, is left unassigned and said to be so. Reference-only stretches are
+    split wherever the reference's own region changes. Coordinates are 1-based, each in its
+    own protein's numbering.
+    """
+    pairs = sorted((int(a), int(b)) for a, b in pairs)        # plain ints: these go to JSON
+    a_of_b = {b: a for a, b in pairs}
+    b_of_a = {a: b for a, b in pairs}
+    prev_a, nxt_a, last = [None] * len(seqB), [None] * len(seqB), None
+    for j in range(len(seqB)):
+        last = a_of_b.get(j, last)
+        prev_a[j] = last
+    last = None
+    for j in range(len(seqB) - 1, -1, -1):
+        last = a_of_b.get(j, last)
+        nxt_a[j] = last
+    prev_b, nxt_b, last = [None] * len(seqA), [None] * len(seqA), None
+    for i in range(len(seqA)):
+        last = b_of_a.get(i, last)
+        prev_b[i] = last
+    last = None
+    for i in range(len(seqA) - 1, -1, -1):
+        last = b_of_a.get(i, last)
+        nxt_b[i] = last
+
+    def reg(i):
+        return regions[i] if regions and i is not None and i < len(regions) else None
+
+    target_only, t_by_region = [], {}
+    for j0, j1 in _runs([j for j in range(len(seqB)) if j not in a_of_b]):
+        before, after = prev_a[j0], nxt_a[j1]          # flanking aligned reference residues
+        where = ("N-terminal" if before is None else "C-terminal" if after is None
+                 else "internal")
+        region = reg(before) if where == "internal" and reg(before) == reg(after) else None
+        n = j1 - j0 + 1
+        if region:
+            t_by_region[region] = t_by_region.get(region, 0) + n
+        target_only.append({"start": j0 + 1, "end": j1 + 1, "length": n, "where": where,
+                            "region": region,
+                            "reference_before": None if before is None else before + 1,
+                            "reference_after": None if after is None else after + 1,
+                            "flank_regions": [reg(before), reg(after)]})
+
+    reference_only, r_by_region = [], {}
+    a_only = [i for i in range(len(seqA)) if i not in b_of_a]
+    split = []
+    for i0, i1 in _runs(a_only):                       # one region per stretch
+        start = i0
+        for i in range(i0 + 1, i1 + 1):
+            if reg(i) != reg(start):
+                split.append((start, i - 1))
+                start = i
+        split.append((start, i1))
+    for i0, i1 in split:
+        before, after = prev_b[i0], nxt_b[i1]
+        where = ("N-terminal" if before is None else "C-terminal" if after is None
+                 else "internal")
+        n = i1 - i0 + 1
+        region = reg(i0)
+        if region:
+            r_by_region[region] = r_by_region.get(region, 0) + n
+        reference_only.append({"start": i0 + 1, "end": i1 + 1, "length": n, "where": where,
+                               "region": region,
+                               "target_before": None if before is None else before + 1,
+                               "target_after": None if after is None else after + 1})
+    return {"target_only": target_only, "reference_only": reference_only,
+            "target_only_total": sum(r["length"] for r in target_only),
+            "reference_only_total": sum(r["length"] for r in reference_only),
+            "target_only_by_region": t_by_region, "reference_only_by_region": r_by_region}
+
+
+def project_topology(ref_seq, ref_topology, seq, pairs=None):
+    """
+    Carry a topology from a reference protein onto an ortholog through their alignment: each
+    residue takes the label of the reference residue it aligns with. A stretch with no
+    counterpart takes its neighbours' label when both neighbours agree (an insertion inside
+    one region) and '.' (unassigned) otherwise -- at a terminus or a region boundary nothing
+    says which side of the membrane it is on.
+    """
+    if pairs is None:
+        pairs, _ = correspondence_seq({"seq": ref_seq}, {"seq": seq})
+    lab = [None] * len(seq)
+    for a, b in pairs:
+        if a < len(ref_topology) and b < len(seq):
+            lab[b] = ref_topology[a]
+    i = 0
+    while i < len(seq):
+        if lab[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(seq) and lab[j] is None:
+            j += 1
+        left = lab[i - 1] if i > 0 else None
+        right = lab[j] if j < len(seq) else None
+        fill = left if left is not None and left == right else "."
+        for k in range(i, j):
+            lab[k] = fill
+        i = j
+    return "".join(lab)
+
+
 def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
     """
     Per-region % sequence identity between reference A and target B, from a sequence
@@ -408,7 +533,15 @@ def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
     pairs, _ = correspondence_seq({"seq": seqA}, {"seq": seqB})
     if not pairs:
         raise ValueError("No aligned residues between the two sequences.")
+    pairs = sorted(pairs)
     g_ident = sum(seqA[a] == seqB[b] for a, b in pairs) / len(pairs)
+    # Residues present in only one of the two proteins. Identity above is over aligned
+    # residues only, so these never count; the "whole" identity below counts each of them as
+    # a difference, and every unmatched stretch is listed with where it is and how long.
+    regions = [code_to_region(c) for c in ref_topology] if ref_topology else None
+    um = unmatched_residues(seqA, seqB, pairs, regions)
+    identical = sum(seqA[a] == seqB[b] for a, b in pairs)
+    whole_den = len(pairs) + um["reference_only_total"] + um["target_only_total"]
     # Identity is computed over ALIGNED positions only, so a sequence that aligns over just
     # part of its length can still score high identity. Coverage (aligned / reference length)
     # exposes that: low coverage means the identity describes only a fraction of the protein.
@@ -421,10 +554,14 @@ def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
                          "seq_identity_pct": round(100 * g_ident, 1),
                          "similarity_pct": g_score["similarity_pct"],
                          "radical_subs": g_score["radical_subs"],
-                         "mean_grantham_subs": g_score["mean_grantham_subs"]},
-              "regions": {}}
+                         "mean_grantham_subs": g_score["mean_grantham_subs"],
+                         "seq_identity_whole_pct": round(100 * identical / whole_den, 1),
+                         "target_only_residues": um["target_only_total"],
+                         "reference_only_residues": um["reference_only_total"]},
+              "regions": {},
+              "unmatched": {"target_only": um["target_only"],
+                            "reference_only": um["reference_only"]}}
     if ref_topology:
-        regions = [code_to_region(c) for c in ref_topology]
         dot_frac = ref_topology.count(".") / max(len(ref_topology), 1)
         if dot_frac > 0.3:
             sys.stderr.write(f"[warn] {dot_frac*100:.0f}% of the topology is '.'; re-run TMbed "
@@ -439,18 +576,30 @@ def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
         region_sizes = {}
         for r in regions:
             region_sizes[r] = region_sizes.get(r, 0) + 1
-        for reg in sorted(buckets, key=lambda r: REGION_ORDER.index(r) if r in REGION_ORDER else 99):
-            prs = buckets[reg]
-            r_ident = sum(seqA[a] == seqB[b] for a, b in prs) / len(prs)
+        # a region can be present in the reference and entirely missing from the target: it
+        # then has no aligned identity at all, but its whole identity is 0%
+        present = set(buckets) | set(um["reference_only_by_region"])
+        for reg in sorted(present, key=lambda r: REGION_ORDER.index(r) if r in REGION_ORDER else 99):
+            prs = buckets.get(reg, [])
             r_size = region_sizes.get(reg, len(prs))
-            r_score = score_substitutions([(seqA[a], seqB[b]) for a, b in prs])
+            r_same = sum(seqA[a] == seqB[b] for a, b in prs)
+            r_only = um["reference_only_by_region"].get(reg, 0)
+            t_only = um["target_only_by_region"].get(reg, 0)
+            r_score = (score_substitutions([(seqA[a], seqB[b]) for a, b in prs]) if prs
+                       else {"similarity_pct": None, "radical_subs": 0,
+                             "mean_grantham_subs": None})
             result["regions"][reg] = {"aligned_residues": len(prs),
                                       "reference_residues": r_size,
                                       "coverage_pct": round(100 * len(prs) / max(r_size, 1), 1),
-                                      "seq_identity_pct": round(100 * r_ident, 1),
+                                      "seq_identity_pct": (round(100 * r_same / len(prs), 1)
+                                                           if prs else None),
                                       "similarity_pct": r_score["similarity_pct"],
                                       "radical_subs": r_score["radical_subs"],
-                                      "mean_grantham_subs": r_score["mean_grantham_subs"]}
+                                      "mean_grantham_subs": r_score["mean_grantham_subs"],
+                                      "seq_identity_whole_pct": round(
+                                          100 * r_same / max(len(prs) + r_only + t_only, 1), 1),
+                                      "target_only_residues": t_only,
+                                      "reference_only_residues": r_only}
     if epitope:
         es, ee = epitope                                   # 1-based inclusive, on reference A
         ep = [(a, b) for a, b in pairs if es - 1 <= a <= ee - 1]

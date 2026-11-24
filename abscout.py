@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.8.2"
+__version__ = "0.9.0"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -348,6 +348,11 @@ def _fetch_uniprot_annotations(acc, seq_len):
     if topo is None:                            # no helix annotated: is it GPI-anchored?
         topo = _gpi_topology_from_features(features, seq_len)
         kind = "gpi" if topo else ""
+    if topo is None and any(f.get("type") in ("Transmembrane", "Intramembrane")
+                            for f in features):
+        # membrane segments annotated but not which side each loop is on: a membrane
+        # protein, so never evidence of "soluble", but no topology to use either
+        kind = "membrane"
     nterm = _nterm_processing_from_features(features)
     cache_put("topo_uniprot", acc, topo or "")
     cache_put("topokind_uniprot", acc, kind)
@@ -357,7 +362,9 @@ def _fetch_uniprot_annotations(acc, seq_len):
 
 def uniprot_topology(acc, seq_len):
     """Curated topology for an accession as (topology_or_None, kind). kind is "tm" for a
-    transmembrane protein, "gpi" for a GPI-anchored one, "" when nothing is annotated."""
+    transmembrane protein, "gpi" for a GPI-anchored one, "membrane" when membrane segments
+    are annotated without their orientation, "" when the entry annotates none of these, and
+    "unknown" when UniProt could not be asked -- which is never read as "nothing annotated"."""
     cached = cache_get("topo_uniprot", acc)
     if cached is not None:
         return (cached or None), (cache_get("topokind_uniprot", acc) or "")
@@ -365,7 +372,7 @@ def uniprot_topology(acc, seq_len):
         topo, kind, _ = _fetch_uniprot_annotations(acc, seq_len)
         return topo, kind
     except requests.RequestException:
-        return None, ""                         # transient: don't cache a failure
+        return None, "unknown"                  # transient: don't cache a failure
 
 
 def uniprot_topology_string(acc, seq_len):
@@ -497,6 +504,42 @@ def region_alignments(model_seqs, target_seq, ref, topology):
             out["regions"].append({"region": reg, "label": REGION_LABELS[reg],
                                    "segments": blocks})
     return out
+
+
+PART_LABELS = {"extracellular": "Extracellular", "TM": "Transmembrane",
+               "intracellular": "Intracellular", "signal": "Signal peptide",
+               "periplasmic": "Periplasmic"}
+
+
+def target_region_map(ref_name, ref_acc, ref_seq, ref_topology, target_seq):
+    """
+    The target's own sequence laid out by region -- the reference topology carried across the
+    alignment, the way a naked mole-rat protein is mapped onto a rodent one by hand -- as
+    contiguous stretches in target numbering. The whole target is covered: stretches with no
+    counterpart in the reference are kept, with where they are and how long they are, and
+    take a region only when both neighbours lie in the same one.
+    """
+    pairs, _ = sc.correspondence_seq({"seq": ref_seq}, {"seq": target_seq})
+    topo = sc.project_topology(ref_seq, ref_topology, target_seq, pairs)
+    um = sc.unmatched_residues(ref_seq, target_seq, pairs,
+                               [sc.code_to_region(c) for c in ref_topology])
+    unmatched_at = set()
+    for u in um["target_only"]:
+        unmatched_at.update(range(u["start"], u["end"] + 1))
+    parts, i = [], 0
+    while i < len(topo):
+        j = i
+        while j + 1 < len(topo) and topo[j + 1] == topo[i]:
+            j += 1
+        region = sc.code_to_region(topo[i]) if topo[i] != "." else None
+        region = region if region in PART_LABELS else None
+        start, end = i + 1, j + 1
+        parts.append({"start": start, "end": end, "length": end - start + 1,
+                      "region": region, "label": PART_LABELS.get(region, "No region"),
+                      "unmatched": sum(1 for k in range(start, end + 1) if k in unmatched_at)})
+        i = j + 1
+    return {"ref": ref_name, "ref_uniprot": ref_acc, "length": len(target_seq),
+            "parts": parts, "unmatched": um["target_only"]}
 
 
 def epitope_across_species(model_seqs, target_seq, epitope_ref, epitope_range):
@@ -1021,25 +1064,43 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
         sys.stderr.write(f"  [warn] {name} may not be the ortholog -- please check it manually\n")
 
     # ---- topology ------------------------------------------------------------------------
-    # Decide membrane-or-not from the best evidence available, not from whichever ortholog
-    # came back first. Curated annotation outranks prediction, and TMbed's "no TM" is only
-    # allowed to settle the question when it ran on the longest model: a fragment that
-    # happens to exclude the helix previously marked the whole protein soluble.
+    # Where each species' membrane regions come from, best evidence first:
+    #   1. its own curated UniProt topology;
+    #   2. the curated topology of the first species that has one, in the order human ->
+    #      mouse -> rat -> rabbit, carried across residue by residue through the alignment.
+    #      Orthologs share their topology, and borrowing gives every species the same
+    #      homologous boundaries, so the regions compared are like for like;
+    #   3. "soluble", when no species' entry annotates a transmembrane or intramembrane
+    #      segment or a GPI anchor and at least one of them is reviewed: Swiss-Prot curators
+    #      annotate those segments, so their absence from a reviewed entry is evidence;
+    #   4. TMbed, only when none of the above applies (command line only);
+    #   5. otherwise unknown -- never assumed soluble.
+    # TMbed's "no TM" may only settle the question when it ran on the longest model: a
+    # fragment that happens to exclude the helix once marked the whole protein soluble.
     curated, anchor = {}, {}
     def curated_topology(m, n):
         return uniprot_topology(m["uniprot"], n) if from_uniprot(m) else (None, "")
     for m, mseq in chosen:
         curated[m["uniprot"]], anchor[m["uniprot"]] = curated_topology(m, len(mseq))
-    # A curated helix or a curated GPI anchor both settle the question: the protein sits in
-    # a membrane, and TMbed must not be allowed to call it soluble.
-    has_curated_tm = any(k in ("tm", "gpi") for k in anchor.values())
+    rank = {c: i for i, c in enumerate(MODEL_ORDER)}
+    by_order = sorted(chosen, key=lambda it: rank.get(it[0]["common"], 99))
+    donor = next(((m, x) for m, x in by_order
+                  if anchor.get(m["uniprot"]) in ("tm", "gpi") and curated.get(m["uniprot"])),
+                 None)
+    has_curated_tm = donor is not None
+    membrane_annotated = [m for m, _ in by_order
+                          if anchor.get(m["uniprot"]) in ("tm", "gpi", "membrane")]
+    soluble_evidence = None if membrane_annotated else next(
+        (m for m, _ in by_order if m.get("uniprot_status") == "reviewed" and from_uniprot(m)
+         and anchor.get(m["uniprot"]) == ""), None)
     tmbed_ok = tmbed_available()
-    # Without TMbed and without a curated topology anywhere, nothing can say where the
-    # membrane is. That is "unknown", never "soluble".
-    unresolved = not has_curated_tm and not tmbed_ok
+    # Without any of that and without TMbed, nothing can say where the membrane is. That is
+    # "unknown", never "soluble".
+    unresolved = not has_curated_tm and soluble_evidence is None and not tmbed_ok
     no_topology = []            # species compared on whole-protein identity only
+    borrowed = []               # species whose regions come from another species' topology
     tmbed_cache, no_tm_seen = {}, False
-    if not has_curated_tm and tmbed_ok:
+    if not has_curated_tm and soluble_evidence is None and tmbed_ok:
         needs = [(m, s) for m, s in chosen if curated.get(m["uniprot"]) is None]
         if needs:
             m0, s0 = max(needs, key=lambda it: len(it[1]))       # longest, not first
@@ -1065,10 +1126,19 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
                 continue
             if m["uniprot"] not in curated:        # e.g. an accession swapped in after the pass
                 curated[m["uniprot"]], anchor[m["uniprot"]] = curated_topology(m, len(mseq))
-            topo = curated[m["uniprot"]]                              # curated first
+            topo = curated[m["uniprot"]]                              # own curated first
             kind = anchor.get(m["uniprot"], "")
             source = "UniProt (GPI-anchored)" if kind == "gpi" else "UniProt"
-            if topo is None and m["uniprot"] in tmbed_cache:
+            if topo is None and has_curated_tm:                       # then borrowed
+                dm, dseq = donor
+                topo = sc.project_topology(dseq, curated[dm["uniprot"]], mseq)
+                kind = anchor[dm["uniprot"]]
+                source = (f"borrowed from {dm['common']} {dm['uniprot']}"
+                          + (" (GPI-anchored)" if kind == "gpi" else ""))
+                borrowed.append(f"{m['common']} ({m['uniprot']})")
+            elif topo is None and soluble_evidence is not None:
+                source = "none (soluble)"
+            elif topo is None and m["uniprot"] in tmbed_cache:
                 topo, source = tmbed_cache[m["uniprot"]], "TMbed"
             elif topo is None and no_tm_seen:
                 source = "none (soluble)"                             # settled above
@@ -1082,18 +1152,28 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
             if topo is None and not tmbed_ok and source != "none (soluble)":
                 sys.stderr.write(f"  [{m['common']}] no curated topology in UniProt and TMbed "
                                  f"is not available: whole-protein identity only\n")
+            elif source.startswith("borrowed"):
+                sys.stderr.write(f"  [{m['common']}] no curated topology of its own: "
+                                 f"{source}\n")
             else:
                 sys.stderr.write(f"  [{m['common']}] reference topology from {source}\n")
             topo_by_common[m["common"]] = topo
             res = sc.compare_sequences(mseq, target_seq, ref_topology=topo)
             regions = {k: res["regions"].get(k, {}).get("seq_identity_pct")
                        for k in ("extracellular", "TM", "intracellular")}
+            regions_whole = {k: res["regions"].get(k, {}).get("seq_identity_whole_pct")
+                             for k in ("extracellular", "TM", "intracellular")}
             model_results.append({"species": m["species"], "common": m["common"],
                                   "uniprot": m["uniprot"], "topology_source": source,
                                   "regions": regions,
-                                  "anchor": anchor.get(m["uniprot"], ""),
+                                  "regions_whole": regions_whole,
+                                  "anchor": kind,
                                   "region_detail": res["regions"],
                                   "overall": res["global"]["seq_identity_pct"],
+                                  "overall_whole": res["global"]["seq_identity_whole_pct"],
+                                  "target_only": res["global"]["target_only_residues"],
+                                  "model_only": res["global"]["reference_only_residues"],
+                                  "unmatched": res["unmatched"],
                                   "overall_similarity": res["global"]["similarity_pct"],
                                   "radical_subs": res["global"]["radical_subs"],
                                   "coverage_pct": res["global"]["coverage_pct"],
@@ -1129,12 +1209,23 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     if model_results and not is_membrane and not unresolved:
         for m in model_results:
             m["regions"] = {"extracellular": None, "TM": None, "intracellular": None}
+            m["regions_whole"] = dict(m["regions"])
             m["soluble"] = True
-        notes.append("no transmembrane segment detected: reported as whole-protein identity")
+        if soluble_evidence is not None:
+            notes.append(f"soluble protein: no species' UniProt entry annotates a transmembrane "
+                         f"or intramembrane segment or a GPI anchor, and "
+                         f"{soluble_evidence['common']} {soluble_evidence['uniprot']} is a "
+                         f"reviewed (Swiss-Prot) entry; reported as whole-protein identity")
+        else:
+            notes.append("no transmembrane segment detected: reported as whole-protein identity")
     elif model_results and unresolved:
-        notes.append("membrane topology unknown: no species has a curated topology in UniProt "
-                     "and TMbed is not available, so only whole-protein identity is shown (the "
-                     "protein is not assumed to be soluble); " + _tmbed_hint())
+        why = ("UniProt annotates membrane segments for "
+               + ", ".join(f"{m['common']} {m['uniprot']}" for m in membrane_annotated)
+               + " but not which side of the membrane each part is on, and "
+               if membrane_annotated else "no species has a curated topology in UniProt, ")
+        notes.append("membrane topology unknown: " + why + "TMbed is not available, so only "
+                     "whole-protein identity is shown (the protein is not assumed to be "
+                     "soluble); " + _tmbed_hint())
 
 
     epitope_info = None
@@ -1198,14 +1289,31 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     if low:
         notes.append("low alignment coverage: " +
                      ", ".join(f"{m['common']} {m['coverage_pct']:.0f}%" for m in low))
-    region_info = None
+    region_info, target_map = None, None
     if model_results and is_membrane:
-        anchor_sp = next((c for c in ["human"] + [m["common"] for m in model_results]
-                          if topo_by_common.get(c) and c in dict(model_seqs)), None)
+        # the same reference as the borrowed topologies: the first curated species in the
+        # order human -> mouse -> rat -> rabbit (or, with TMbed only, the first with one)
+        anchor_sp = (donor[0]["common"] if donor and donor[0]["common"] in dict(model_seqs)
+                     else next((c for c in MODEL_ORDER + [m["common"] for m in model_results]
+                                if topo_by_common.get(c) and c in dict(model_seqs)), None))
         if anchor_sp:
             region_info = region_alignments(model_seqs, target_seq, anchor_sp,
                                             topo_by_common[anchor_sp])
+            ref_entry = next(m for m in model_results if m["common"] == anchor_sp)
+            target_map = target_region_map(anchor_sp, ref_entry["uniprot"],
+                                           dict(model_seqs)[anchor_sp],
+                                           topo_by_common[anchor_sp], target_seq)
     resolved["region_alignments"] = region_info
+    resolved["target_map"] = target_map
+    if borrowed:
+        notes.append("no curated topology of their own in UniProt for " + ", ".join(borrowed)
+                     + f": regions borrowed from {donor[0]['common']} {donor[0]['uniprot']} "
+                     "through the alignment")
+    if target_map and target_map["unmatched"]:
+        notes.append("target residues with no counterpart in " + target_map["ref"] + ": "
+                     + "; ".join(f"{u['start']}-{u['end']} ({u['length']} aa, {u['where']}"
+                                 + (f", {u['region']}" if u["region"] else "") + ")"
+                                 for u in target_map["unmatched"]))
     if no_topology and not unresolved:
         notes.append("no curated membrane topology in UniProt for " + ", ".join(no_topology)
                      + ": whole-protein identity only for "
@@ -1221,7 +1329,8 @@ def _fmt(x):
     return f"{x:.1f}" if x is not None else "  -"
 
 
-def render_html(gene, target, model_results, epitope_info=None, notes=None, regions=None):
+def render_html(gene, target, model_results, epitope_info=None, notes=None, regions=None,
+                target_map=None):
     """Self-contained HTML report (no server, opens in a browser)."""
     order = {c: i for i, c in enumerate(MODEL_ORDER)}
     rows = sorted(model_results, key=lambda m: order.get(m["common"], 99))
@@ -1233,27 +1342,122 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
         c = "#1b9e57" if pct >= 85 else "#e0972a" if pct >= 70 else "#cf3b3b"
         return f'<td style="background:{c};color:#fff;font-weight:600">{pct:.1f}%</td>'
 
+    def cell2(pct, whole):
+        """Identity over aligned residues, with the identity that counts residues present in
+        only one of the two proteins underneath whenever the two figures differ."""
+        if whole is None or (pct is not None and abs(whole - pct) < 0.05):
+            return cell(pct)
+        return cell(pct).replace(
+            "</td>", f'<div class="whole">counting unmatched: {whole:.1f}%</div></td>')
+
+    def differs(m):
+        pairs_ = [(m.get("overall"), m.get("overall_whole"))]
+        if not m.get("soluble"):
+            pairs_ += [((m.get("regions") or {}).get(k), (m.get("regions_whole") or {}).get(k))
+                       for k in ("extracellular", "TM", "intracellular")]
+        return any(w is not None and (p is None or abs(w - p) >= 0.05) for p, w in pairs_)
+    two_figures = ('<p class="sub">Each cell is identity over aligned residues. A second figure '
+                   'appears where some residues are present in only one of the two proteins: it '
+                   'counts those residues as differences. Where they are and how long they are: '
+                   '<a href="#unmatched">residues present in only one protein</a>.</p>'
+                   if any(differs(m) for m in model_results) else "")
+
     if soluble:
         body = ""
         for m in rows:
             body += (f'<tr><td class="lbl">{m["common"].capitalize()}'
-                     f'<span class="acc">{m["uniprot"]}</span></td>{cell(m["overall"])}</tr>')
+                     f'<span class="acc">{m["uniprot"]}</span></td>'
+                     f'{cell2(m["overall"], m.get("overall_whole"))}</tr>')
         note = ('<p class="sub">No transmembrane segment detected &mdash; this appears to be a '
                 'soluble (non-membrane) protein, so the extracellular / transmembrane / '
                 'intracellular split does not apply.</p>')
         main_table = (f'{note}<table><tr><th>Model (antibody host)</th>'
-                      f'<th>Whole-protein identity</th></tr>{body}</table>')
+                      f'<th>Whole-protein identity</th></tr>{body}</table>{two_figures}')
     else:
         body = ""
         for m in rows:
-            r = m["regions"]
+            r, rw = m["regions"], m.get("regions_whole") or {}
             body += (f'<tr><td class="lbl">{m["common"].capitalize()}'
                      f'<span class="acc">{m["uniprot"]} · topology: {m.get("topology_source","?")}</span></td>'
-                     f'{cell(r.get("extracellular"))}{cell(r.get("TM"))}'
-                     f'{cell(r.get("intracellular"))}{cell(m["overall"])}</tr>')
+                     f'{cell2(r.get("extracellular"), rw.get("extracellular"))}'
+                     f'{cell2(r.get("TM"), rw.get("TM"))}'
+                     f'{cell2(r.get("intracellular"), rw.get("intracellular"))}'
+                     f'{cell2(m["overall"], m.get("overall_whole"))}</tr>')
         main_table = ('<table><tr><th>Model (antibody host)</th><th>Extracellular</th>'
                       '<th>Transmembrane</th><th>Intracellular</th><th>Overall</th></tr>'
-                      f'{body}</table>')
+                      f'{body}</table>{two_figures}')
+
+    # ---- the target's own sequence by region, and every unmatched stretch -------------------
+    tmap_html = ""
+    if target_map:
+        ref_lbl = f'{target_map["ref"]} {target_map["ref_uniprot"]}'
+        trs = ""
+        for part in target_map["parts"]:
+            if part["region"] is None:
+                why = (f'no counterpart in {target_map["ref"]}'
+                       if part["unmatched"] == part["length"] else
+                       f'{part["unmatched"]} of these residues have no counterpart in '
+                       f'{target_map["ref"]}' if part["unmatched"] else
+                       f'aligned to {target_map["ref"]} residues outside any region')
+            else:
+                why = (f'{part["unmatched"]} residues have no counterpart in '
+                       f'{target_map["ref"]}; placed by their neighbours'
+                       if part["unmatched"] else "")
+            trs += (f'<tr><td class="lbl">{part["label"]}</td>'
+                    f'<td>{part["start"]}&ndash;{part["end"]}</td><td>{part["length"]}</td>'
+                    f'<td class="lbl">{why}</td></tr>')
+        tmap_html = (f'<h2 style="margin-top:22px">Target sequence by region</h2>'
+                     f'<p class="sub">The whole target ({target_map["length"]} aa) mapped onto '
+                     f'the {ref_lbl} topology through the alignment, in target numbering.</p>'
+                     f'<table><tr><th>Part</th><th>Target residues</th><th>Length</th>'
+                     f'<th>Note</th></tr>{trs}</table>')
+
+    def region_text(region, where):
+        if region:
+            return PART_LABELS.get(region, region)
+        return "none (at a terminus)" if where != "internal" else "none (at a region boundary)"
+
+    shared = {}
+    for m in rows:
+        for u in (m.get("unmatched") or {}).get("target_only", []):
+            e = shared.setdefault((u["start"], u["end"]), {"u": u, "species": [],
+                                                           "regions": set()})
+            e["species"].append(m["common"])
+            e["regions"].add(u["region"])
+    um_rows, n_um = "", 0
+    for (a, b), e in sorted(shared.items()):
+        u = e["u"]
+        reg = (region_text(next(iter(e["regions"])), u["where"]) if len(e["regions"]) == 1
+               else "varies by species")
+        pos = (u["where"] if u["where"] != "internal"
+               else f'internal, between target {a - 1} and {b + 1}')
+        um_rows += (f'<tr><td class="lbl"><b>Target</b></td><td>{a}&ndash;{b}</td>'
+                    f'<td>{u["length"]}</td><td class="lbl">{pos}</td><td>{reg}</td>'
+                    f'<td class="lbl">{", ".join(e["species"])}</td></tr>')
+        n_um += 1
+    for m in rows:
+        for u in (m.get("unmatched") or {}).get("reference_only", []):
+            pos = (u["where"] if u["where"] != "internal" else
+                   f'missing from the target between target {u["target_before"]} and '
+                   f'{u["target_after"]}')
+            um_rows += (f'<tr><td class="lbl">{m["common"].capitalize()}</td>'
+                        f'<td>{u["start"]}&ndash;{u["end"]}</td><td>{u["length"]}</td>'
+                        f'<td class="lbl">{pos}</td><td>{region_text(u["region"], u["where"])}</td>'
+                        f'<td>&mdash;</td></tr>')
+            n_um += 1
+    unmatched_html = ""
+    if n_um:
+        unmatched_html = (
+            '<h2 id="unmatched" style="margin-top:22px">Residues present in only one protein</h2>'
+            '<p class="sub">Stretches with no counterpart in the other protein, each in its own '
+            'protein&rsquo;s numbering. They are left out of identity over aligned residues and '
+            'counted as differences in the second figure. A stretch inside one region is placed '
+            'in it; one at a terminus or a region boundary is not placed.</p>'
+            f'<details class="seg"{" open" if n_um <= 12 else ""}><summary>{n_um} '
+            f'stretch{"es" if n_um != 1 else ""}</summary>'
+            '<table><tr><th>Present only in</th><th>Residues</th><th>Length</th>'
+            '<th>Position</th><th>Region</th><th>Unmatched against</th></tr>'
+            f'{um_rows}</table></details>')
 
     ep_html = ""
     if epitope_info:
@@ -1438,8 +1642,8 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
             f'<p class="sub">Each region as defined on the {ref} topology, aligned across species. '
             'Red = residue differs from the target. Long segments are collapsed: click to open. '
             'Identities here are measured on these reference-defined segments, so they can '
-            'differ slightly from the table above, which uses each species&rsquo; own '
-            'topology.</p>' + "".join(parts))
+            'differ slightly from the table above, where a species with its own curated '
+            'topology uses that one.</p>' + "".join(parts))
 
     notes_html = ""
     if notes:
@@ -1471,6 +1675,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
  .notes{{background:#f8fafc;border:1px solid #cbd5e1;border-radius:6px;padding:8px 14px;margin:14px 0;font-size:13px;color:#334155}}
  .notes ul{{margin:4px 0 2px 18px;padding:0}} .notes li{{margin:3px 0}}
  .caveat{{color:#6b7280;font-size:12px;border-top:1px solid #e5e7eb;padding-top:12px;margin-top:22px}}
+ .whole{{font-size:11px;font-weight:400;opacity:.92;margin-top:2px}}
 </style></head><body>
 <h1>AbScout &mdash; {gene} in <i>{target["species"]}</i></h1>
 <p class="sub">Target protein {target["uniprot"]}</p>
@@ -1481,6 +1686,8 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
  <span style="background:#cf3b3b">&lt;70%</span>
  <span style="background:#eef0f2;color:#8a919a">n/a</span></div>
 {main_table}
+{tmap_html}
+{unmatched_html}
 {ep_html}
 {regions_html}
 <p class="caveat">These are percent identities for your interpretation &mdash; not a guarantee
@@ -1489,7 +1696,8 @@ binding). Generated by AbScout {__version__}{" (web version)" if IN_BROWSER else
 </body></html>'''
 
 
-def rank_and_report(gene, target, targets, model_results, epitope_info=None, notes=None):
+def rank_and_report(gene, target, targets, model_results, epitope_info=None, notes=None,
+                    target_map=None):
     order = {c: i for i, c in enumerate(MODEL_ORDER)}
     rows = sorted(model_results, key=lambda m: order.get(m["common"], 99))
     soluble = bool(model_results) and all(m.get("soluble") for m in model_results)
@@ -1514,6 +1722,53 @@ def rank_and_report(gene, target, targets, model_results, epitope_info=None, not
             r = m["regions"]
             L.append(f"  {m['common']:<10}{_fmt(r.get('extracellular')):>15}{_fmt(r.get('TM')):>15}"
                      f"{_fmt(r.get('intracellular')):>15}{_fmt(m['overall']):>10}")
+    whole_differs = any(
+        w is not None and (p is None or abs(w - p) >= 0.05)
+        for m in rows for p, w in
+        [(m.get("overall"), m.get("overall_whole"))] +
+        ([] if m.get("soluble") else
+         [((m.get("regions") or {}).get(k), (m.get("regions_whole") or {}).get(k))
+          for k in ("extracellular", "TM", "intracellular")]))
+    if whole_differs:
+        L += ["", "The same, counting residues present in only one of the two proteins as "
+                  "differences (%):", ""]
+        if soluble:
+            L.append(f"  {'model':<10}{'overall':>10}")
+            for m in rows:
+                L.append(f"  {m['common']:<10}{_fmt(m.get('overall_whole')):>10}")
+        else:
+            L.append(f"  {'model':<10}{'extracellular':>15}{'transmembrane':>15}"
+                     f"{'intracellular':>15}{'overall':>10}")
+            for m in rows:
+                w = m.get("regions_whole") or {}
+                L.append(f"  {m['common']:<10}{_fmt(w.get('extracellular')):>15}"
+                         f"{_fmt(w.get('TM')):>15}{_fmt(w.get('intracellular')):>15}"
+                         f"{_fmt(m.get('overall_whole')):>10}")
+    if target_map:
+        L += ["", f"Target sequence by region (mapped from {target_map['ref']} "
+                  f"{target_map['ref_uniprot']}, target numbering):"]
+        for part in target_map["parts"]:
+            extra = ""
+            if part["unmatched"] == part["length"]:
+                extra = f"  -- no counterpart in {target_map['ref']}"
+            elif part["unmatched"]:
+                extra = f"  -- {part['unmatched']} residues with no counterpart"
+            L.append(f"  {part['label']:<20}{part['start']:>5}-{part['end']:<6}"
+                     f"({part['length']} aa){extra}")
+    stretches = []
+    for m in rows:
+        for u in (m.get("unmatched") or {}).get("target_only", []):
+            stretches.append(f"  target {u['start']}-{u['end']} ({u['length']} aa, "
+                             f"{u['where']}{', ' + u['region'] if u['region'] else ''}) "
+                             f"-- not in {m['common']}")
+        for u in (m.get("unmatched") or {}).get("reference_only", []):
+            stretches.append(f"  {m['common']} {u['start']}-{u['end']} ({u['length']} aa, "
+                             f"{u['where']}{', ' + u['region'] if u['region'] else ''}) "
+                             f"-- not in the target")
+    if stretches:
+        L += ["", "Residues present in only one protein (each in its own numbering):"]
+        L += stretches if len(stretches) <= 20 else stretches[:20] + [
+            f"  ... and {len(stretches) - 20} more (see the HTML report or JSON)"]
 
     if epitope_info:
         er = epitope_info["range"]
@@ -1653,6 +1908,9 @@ def rank_and_report(gene, target, targets, model_results, epitope_info=None, not
 
 BATCH_COLUMNS = ["case", "gene", "target_taxon", "model", "uniprot", "length",
                  "extracellular", "transmembrane", "intracellular", "overall",
+                 "extracellular_incl_unmatched", "transmembrane_incl_unmatched",
+                 "intracellular_incl_unmatched", "overall_incl_unmatched",
+                 "target_only_aa", "model_only_aa",
                  "coverage_pct", "topology_source", "epitope_range", "epitope_ref",
                  "epitope_residues", "epitope_alt_numbering",
                  "epitope_coordinates", "epitope_length", "epitope_indels",
@@ -1735,6 +1993,15 @@ def run_batch(path, out_csv, timeout):
                                  "transmembrane": r.get("TM"),
                                  "intracellular": r.get("intracellular"),
                                  "overall": m["overall"],
+                                 "extracellular_incl_unmatched":
+                                     (m.get("regions_whole") or {}).get("extracellular"),
+                                 "transmembrane_incl_unmatched":
+                                     (m.get("regions_whole") or {}).get("TM"),
+                                 "intracellular_incl_unmatched":
+                                     (m.get("regions_whole") or {}).get("intracellular"),
+                                 "overall_incl_unmatched": m.get("overall_whole"),
+                                 "target_only_aa": m.get("target_only"),
+                                 "model_only_aa": m.get("model_only"),
                                  "coverage_pct": m.get("coverage_pct"),
                                  "topology_source": m.get("topology_source"),
                                  "epitope_range": ("-".join(map(str, ei["range"]))
@@ -1795,16 +2062,19 @@ def run_single(gene, target_taxon, epitope=None, epitope_ref="human", epitope_se
     if not model_results:
         raise AbScoutError("No model orthologs could be compared (no sequences/topology).")
     run_notes = resolved.get("notes", [])
+    target_map = resolved.get("target_map")
     report, result = rank_and_report(gene, target, targets, model_results, epitope_info,
-                                     notes=run_notes)
+                                     notes=run_notes, target_map=target_map)
     result["notes"] = run_notes
+    if target_map:
+        result["target_map"] = target_map
     result["abscout_version"] = __version__ + (" (web)" if IN_BROWSER else "")
     result["generated"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     regions = resolved.get("region_alignments")
     if regions:
         result["region_alignments"] = regions
     html = render_html(gene, target, model_results, epitope_info, notes=run_notes,
-                       regions=regions)
+                       regions=regions, target_map=target_map)
     return {"report": report, "result": result, "html": html, "has_regions": bool(regions)}
 
 

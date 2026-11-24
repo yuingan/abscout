@@ -433,7 +433,9 @@ def test_one_ortholog_chosen_per_species(monkey=None):
         o("rabbit", "RAB_GOOD", "reviewed", "ortholog_one2one", 9986),
         o("target", "TGT", "reviewed", "ortholog_one2one", 10181, True)]}
     ab.fetch_uniprot_seq = lambda acc: seqs[acc]
-    ab.uniprot_topology = lambda acc, n: (None, "")
+    # UniProt could not be asked: no curated evidence either way, so TMbed has to decide
+    # ("" from a reviewed entry would now be curated evidence of a soluble protein)
+    ab.uniprot_topology = lambda acc, n: (None, "unknown")
     def fake_tmbed(seq, work, tag, acc=None):
         tmbed_calls.append(acc)
         return "o" * 20 + "H" * 20 + "i" * (len(seq) - 40)
@@ -537,8 +539,11 @@ def _stub_run(ro_mod, orths, seqs, curated=None, tmbed=None, upgrade=None, topol
     ro_mod.resolve = lambda g, t: {"gene": g, "target_taxid": t, "orthologs": orths}
     ab.fetch_uniprot_seq = lambda acc: seqs[acc]
     _cur = curated or (lambda acc, n: None)
+    # default: a curated topology where `curated` gives one, otherwise "UniProt could not
+    # say" -- tests that mean "the entry annotates nothing" pass `topology` explicitly,
+    # because from a reviewed entry that is evidence of a soluble protein
     ab.uniprot_topology = topology or (
-        lambda acc, n: ((_cur(acc, n)), "tm" if _cur(acc, n) else ""))
+        lambda acc, n: ((_cur(acc, n)), "tm" if _cur(acc, n) else "unknown"))
 
     def tm(seq, work, tag, acc=None):
         calls.append(acc)
@@ -612,10 +617,16 @@ def test_curated_annotation_outranks_prediction_for_solubility():
     curated = lambda acc, n: ("o" * 600 + "H" * 21 + "i" * (n - 621)) if acc == "HUM" else None
     _, _, models, calls = _stub_run(ro, orths, seqs, curated=curated)
     assert not any(m.get("soluble") for m in models)
-    assert "RAB" in calls, "the unannotated model still needs its own topology"
+    # KC's fallback (Nov 2026): a species without its own curated topology borrows the first
+    # curated one in the order human -> mouse -> rat -> rabbit, before TMbed is considered
+    assert calls == [], f"TMbed must not run while a curated topology can be borrowed: {calls}"
+    rab = [m for m in models if m["common"] == "rabbit"][0]
+    assert rab["topology_source"] == "borrowed from human HUM", rab["topology_source"]
+    assert rab["regions"]["TM"] is not None and rab["regions"]["extracellular"] is not None
     hum = [m for m in models if m["common"] == "human"][0]
     assert hum["topology_source"] == "UniProt" and hum["regions"]["TM"] is not None
-    print("curated-outranks-prediction OK: annotated TM settles solubility")
+    print("curated-outranks-prediction OK: annotated TM settles solubility; rabbit borrows "
+          "human's topology instead of running TMbed")
 
 
 def test_partial_target_is_rescued_against_ortholog_lengths():
@@ -934,44 +945,65 @@ def test_deleted_uniprot_entry_is_reported_not_used():
     print("deleted entry OK: reported as deleted from UniProtKB, not run as a 0 aa protein")
 
 
-def test_without_tmbed_uncurated_species_keeps_whole_protein_numbers():
-    """The web version has no TMbed. A species with no curated topology must still be
-    compared (whole protein + epitope), not skipped, and TMbed must never be called."""
+def test_species_without_own_topology_borrows_curated_one():
+    """KC's fallback (Nov 2026): mouse has no curated topology of its own here, so it borrows
+    human's through the alignment -- on the web (no TMbed) and on the command line alike, and
+    without calling TMbed. Every report says where the regions came from."""
     import resolve_orthologs as ro
-    hum, mou, tgt = REAL["P07766"], REAL["P22646"], REAL["P27597"]
     topo_h = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
     orths = [_orth("human", "P07766", "reviewed", 9606),
              _orth("mouse", "P22646", "reviewed", 10090),
              _orth("dog", "P27597", "reviewed", 9615, True)]
-    resolved, _, models, calls = _stub_run(
-        ro, orths, REAL, tmbed_ok=False,
-        topology=lambda acc, n: ((topo_h, "tm") if acc == "P07766" else (None, "")))
-    assert calls == [], "TMbed must not be called when it is not available"
-    mou_r = [m for m in models if m["common"] == "mouse"][0]
-    assert mou_r["regions"] == {"extracellular": None, "TM": None, "intracellular": None}
-    assert mou_r["overall"] and mou_r["topology_source"] == "not annotated in UniProt", mou_r
-    assert not mou_r.get("soluble"), "unknown topology is not soluble"
-    hum_r = [m for m in models if m["common"] == "human"][0]
-    assert hum_r["regions"]["TM"] is not None, hum_r["regions"]
-    assert resolved["region_alignments"], "human's curated topology still anchors the regions"
-    note = " ".join(resolved["notes"])
-    assert "no curated membrane topology in UniProt for mouse (P22646)" in note, note
-    assert "region-by-region" in note, note
-    print("no-TMbed OK: mouse kept with whole-protein %.1f%%, human regions intact, notes say why"
-          % mou_r["overall"])
+    for tmbed_ok in (False, True):
+        resolved, _, models, calls = _stub_run(
+            ro, orths, REAL, tmbed_ok=tmbed_ok,
+            topology=lambda acc, n: ((topo_h, "tm") if acc == "P07766" else (None, "")))
+        assert calls == [], "TMbed must not run while a curated topology can be borrowed"
+        mou = [m for m in models if m["common"] == "mouse"][0]
+        assert mou["topology_source"] == "borrowed from human P07766", mou["topology_source"]
+        assert all(mou["regions"][k] is not None for k in ("extracellular", "TM",
+                                                            "intracellular")), mou["regions"]
+        note = " ".join(resolved["notes"])
+        assert "regions borrowed from human P07766" in note and "mouse (P22646)" in note, note
+    hum = [m for m in models if m["common"] == "human"][0]
+    # mouse's borrowed regions are human's, carried across: the real mouse CD3E annotation
+    # (P22646: TM 109-134) is where the borrowed helix should land
+    t = ab.sc.project_topology(REAL["P07766"], topo_h, REAL["P22646"])
+    helix = [i + 1 for i, c in enumerate(t) if c == "H"]
+    assert abs(helix[0] - 109) <= 3 and abs(helix[-1] - 134) <= 3, (helix[0], helix[-1])
+    print("borrowed topology OK: mouse takes human's (helix %d-%d vs curated 109-134), TMbed "
+          "not called, notes say so; human %.1f%% extracellular"
+          % (helix[0], helix[-1], hum["regions"]["extracellular"]))
 
 
-def test_without_tmbed_nothing_curated_is_unknown_not_soluble():
+def test_soluble_from_reviewed_entries_unknown_otherwise():
+    """No species annotates a membrane segment: a reviewed entry makes that curated evidence
+    of a soluble protein (TP53). If UniProt could not be asked, or only annotates membrane
+    segments without their orientation, the topology stays unknown -- never soluble."""
     import resolve_orthologs as ro
     orths = [_orth("human", "P07766", "reviewed", 9606),
              _orth("dog", "P27597", "reviewed", 9615, True)]
-    resolved, _, models, calls = _stub_run(ro, orths, REAL, tmbed_ok=False,
-                                           topology=lambda acc, n: (None, ""))
-    assert calls == [] and models and not any(m.get("soluble") for m in models), models
-    note = " ".join(resolved["notes"])
-    assert "membrane topology unknown" in note and "not assumed to be soluble" in note, note
-    assert not resolved["region_alignments"], "no topology, no region sections"
-    print("no-TMbed OK: nothing curated -> 'topology unknown', never 'soluble'")
+    for tmbed_ok in (False, True):
+        resolved, _, models, calls = _stub_run(ro, orths, REAL, tmbed_ok=tmbed_ok,
+                                               topology=lambda acc, n: (None, ""))
+        assert calls == [] and models and all(m.get("soluble") for m in models), models
+        note = " ".join(resolved["notes"])
+        assert "soluble protein" in note and "human P07766 is a reviewed" in note, note
+
+    for kind, says in (("unknown", "no species has a curated topology"),
+                       ("membrane", "annotates membrane segments for human P07766")):
+        resolved, _, models, calls = _stub_run(ro, orths, REAL, tmbed_ok=False,
+                                               topology=lambda acc, n: (None, kind))
+        assert calls == [] and not any(m.get("soluble") for m in models), models
+        note = " ".join(resolved["notes"])
+        assert "membrane topology unknown" in note and says in note, note
+    unreviewed = [_orth("human", "P07766", "unreviewed", 9606),
+                  _orth("dog", "P27597", "reviewed", 9615, True)]
+    resolved, _, models, _ = _stub_run(ro, unreviewed, REAL, tmbed_ok=False,
+                                       topology=lambda acc, n: (None, ""))
+    assert not any(m.get("soluble") for m in models), "an unreviewed entry is no evidence"
+    print("soluble rule OK: reviewed entry with no membrane annotation -> soluble; failed "
+          "lookup, orientation-less TM or unreviewed only -> unknown")
 
 
 def test_no_target_message_says_why():
@@ -1113,9 +1145,14 @@ def test_deleted_model_uses_ensembl_sequence_without_uniprot_lookups():
         ab.fetch_ensembl_seq = saved
     mou = [m for m in models if m["common"] == "mouse"][0]
     assert mou["uniprot"] == "Ensembl:ENSMUSP_T", mou
-    assert mou["topology_source"] == "no UniProt entry (Ensembl sequence)", mou
+    # no UniProt entry, so no topology of its own: it borrows human's like any other species
+    assert mou["topology_source"] == "borrowed from human P07766", mou["topology_source"]
+    assert mou["regions"]["TM"] is not None, mou["regions"]
     assert mou["overall"] and not any(str(a).startswith("Ensembl:") for a in asked), asked
-    print("deleted model OK: mouse compared on Ensembl's sequence, UniProt not asked about it")
+    import json
+    json.dumps(mou)                     # every new field must survive the JSON download
+    print("deleted model OK: mouse compared on Ensembl's sequence with human's topology, "
+          "UniProt not asked about it")
 
 
 def test_no_sequence_anywhere_is_reported():
@@ -1137,6 +1174,53 @@ def test_no_sequence_anywhere_is_reported():
     finally:
         ab.fetch_ensembl_seq = saved
     print("no-sequence OK: stops and says neither source had one")
+
+
+def test_long_target_whole_protein_is_shown():
+    """Naked mole-rat THY1 case (Ensembl's sequence is 256 aa against 161 aa elsewhere). Shown
+    with real CD3E: the dog sequence with 95 extra N-terminal residues. The extra stretch may be
+    real biology, so it is neither dropped nor called an artefact: the target is mapped by
+    region as a whole, the stretch is listed with where it is and how long it is, and the
+    identity that counts unmatched residues falls while the aligned identity does not."""
+    import json, resolve_orthologs as ro
+    ext = _seq(95, seed=21)
+    seqs = dict(REAL, LONG_DOG=ext + REAL["P27597"])
+    topo_h = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
+    orths = [_orth("human", "P07766", "reviewed", 9606),
+             _orth("mouse", "P22646", "reviewed", 10090),
+             _orth("dog", "LONG_DOG", "reviewed", 9615, True)]
+    resolved, target, models, _ = _stub_run(
+        ro, orths, seqs, tmbed_ok=False,
+        topology=lambda acc, n: ((topo_h, "tm") if acc == "P07766" else (None, "")))
+    hum = [m for m in models if m["common"] == "human"][0]
+    nterm = hum["unmatched"]["target_only"][0]
+    assert (nterm["start"], nterm["where"], nterm["region"]) == (1, "N-terminal", None), nterm
+    assert 90 <= nterm["length"] <= 100, nterm
+    assert hum["overall_whole"] < hum["overall"] - 15, (hum["overall"], hum["overall_whole"])
+    tm = resolved["target_map"]
+    first = tm["parts"][0]
+    assert tm["ref"] == "human" and first["label"] == "No region" and first["start"] == 1
+    assert first["unmatched"] == first["length"], first
+    labels = [p["label"] for p in tm["parts"]]
+    for lbl in ("Signal peptide", "Extracellular", "Transmembrane", "Intracellular"):
+        assert lbl in labels, labels
+    note = " ".join(resolved["notes"])
+    assert "target residues with no counterpart in human: 1-" in note, note
+    report, result = ab.rank_and_report("CD3E", target, [target], models, None,
+                                        notes=resolved["notes"], target_map=tm)
+    assert "Target sequence by region (mapped from human P07766" in report, report
+    assert "counting residues present in only one of the two proteins" in report, report
+    html = ab.render_html("CD3E", target, models, None, notes=resolved["notes"],
+                          regions=resolved["region_alignments"], target_map=tm)
+    for h in ("Target sequence by region", "Residues present in only one protein",
+              "counting unmatched:", "no counterpart in human"):
+        assert h in html, h
+    json.dumps(dict(result, target_map=tm))
+    ext_part = next(p for p in tm["parts"] if p["label"] == "Extracellular")
+    print("long target OK: N-terminal %d-%d (%d aa) listed, no region; extracellular at "
+          "target %d-%d; human overall %.1f%% aligned vs %.1f%% counting unmatched"
+          % (nterm["start"], nterm["end"], nterm["length"], ext_part["start"], ext_part["end"],
+             hum["overall"], hum["overall_whole"]))
 
 
 if __name__ == "__main__":
@@ -1187,11 +1271,12 @@ if __name__ == "__main__":
     test_derived_cache_is_per_version()
     test_gpi_alternate_description_real_thy1()
     test_deleted_uniprot_entry_is_reported_not_used()
-    test_without_tmbed_uncurated_species_keeps_whole_protein_numbers()
-    test_without_tmbed_nothing_curated_is_unknown_not_soluble()
+    test_species_without_own_topology_borrows_curated_one()
+    test_soluble_from_reviewed_entries_unknown_otherwise()
     test_no_target_message_says_why()
     test_deleted_target_uses_ensembl_then_swissprot()
     test_deleted_target_without_swissprot_keeps_ensembl_sequence()
     test_deleted_model_uses_ensembl_sequence_without_uniprot_lookups()
     test_no_sequence_anywhere_is_reported()
+    test_long_target_whole_protein_is_shown()
     print("\nALL ABSCOUT TESTS PASSED")

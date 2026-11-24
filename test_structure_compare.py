@@ -221,7 +221,64 @@ def test_conservation_scoring():
           "similarity 100%% vs 25%%")
 
 
+def _protein(n, seed):
+    import random
+    r = random.Random(seed)
+    return "".join(r.choice("ACDEFGHIKLMNPQRSTVWY") for _ in range(n))
+
+
+def test_unmatched_stretches_and_whole_identity():
+    """A target with a 20-residue N-terminal extension, a 6-residue insertion inside the
+    extracellular region, and 10 residues deleted across the TM/intracellular boundary.
+    Each stretch must be reported with its position and length, the insertion placed in
+    the extracellular region, the terminal extension left unassigned, and the deletion split
+    at the region boundary."""
+    A = _protein(207, 7)
+    topo = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
+    ext, ins = _protein(20, 8), "GGWGGW"
+    B = ext + A[:100] + ins + A[100:150] + A[160:]
+    res = sc.compare_sequences(A, B, ref_topology=topo)
+    t_only = res["unmatched"]["target_only"]
+    assert [(r["start"], r["end"], r["length"], r["where"], r["region"]) for r in t_only] == [
+        (1, 20, 20, "N-terminal", None), (121, 126, 6, "internal", "extracellular")], t_only
+    r_only = res["unmatched"]["reference_only"]
+    assert [(r["start"], r["end"], r["region"]) for r in r_only] == [
+        (151, 152, "TM"), (153, 160, "intracellular")], r_only
+    g = res["global"]
+    assert g["seq_identity_pct"] == 100.0, g                 # every aligned residue is identical
+    assert g["target_only_residues"] == 26 and g["reference_only_residues"] == 10, g
+    assert g["seq_identity_whole_pct"] == round(100 * 197 / (197 + 36), 1), g
+    ec = res["regions"]["extracellular"]
+    assert ec["seq_identity_pct"] == 100.0 and ec["target_only_residues"] == 6, ec
+    assert ec["seq_identity_whole_pct"] == round(100 * 104 / 110, 1), ec
+    tm = res["regions"]["TM"]
+    assert tm["reference_only_residues"] == 2 and tm["seq_identity_whole_pct"] == round(
+        100 * 24 / 26, 1), tm
+    print("unmatched OK: N-terminal 1-20 (20 aa, unassigned), 121-126 (6 aa, extracellular); "
+          "deletion split TM 151-152 / intracellular 153-160; whole identity %.1f%%"
+          % g["seq_identity_whole_pct"])
+
+
+def test_project_topology():
+    A = _protein(207, 7)
+    topo = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
+    B = _protein(20, 8) + A[:100] + "GGWGGW" + A[100:]
+    t = sc.project_topology(A, topo, B)
+    assert len(t) == len(B)
+    assert t[:20] == "." * 20, "a terminal extension has no side of the membrane to inherit"
+    assert t[20:42] == "S" * 22 and t[120:126] == "oooooo", t[115:130]
+    assert t.count("H") == 26 and t.endswith("i" * 55), t
+    # an insertion exactly at a region boundary stays unassigned
+    C = A[:126] + "PPPP" + A[126:]
+    tc = sc.project_topology(A, topo, C)
+    assert tc[126:130] == "....", tc[120:135]
+    print("project_topology OK: extension '.', insertion inside a region inherits it, "
+          "insertion at a boundary stays '.'")
+
+
 if __name__ == "__main__":
+    test_unmatched_stretches_and_whole_identity()
+    test_project_topology()
     main()
     test_conservation_scoring()
     print("\nALL STRUCTURE-COMPARE TESTS PASSED")
