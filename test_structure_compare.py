@@ -254,6 +254,15 @@ def test_unmatched_stretches_and_whole_identity():
     tm = res["regions"]["TM"]
     assert tm["reference_only_residues"] == 2 and tm["seq_identity_whole_pct"] == round(
         100 * 24 / 26, 1), tm
+    assert [r["placement"] for r in t_only] == ["terminal", "inside"], t_only
+    assert all(r["placement"] == "inside" for r in r_only), r_only
+    # a stretch the target lacks inside a part of the reference that is in no region (a GPI
+    # propeptide, '.'), and the same comparison with no topology at all
+    gpi = "S" * 19 + "o" * 111 + "." * 77
+    res2 = sc.compare_sequences(A, A[:130], ref_topology=gpi)
+    assert [r["placement"] for r in res2["unmatched"]["reference_only"]] == ["outside"], res2
+    res3 = sc.compare_sequences(A, B)
+    assert {r["placement"] for r in res3["unmatched"]["target_only"]} == {"no topology"}, res3
     print("unmatched OK: N-terminal 1-20 (20 aa, unassigned), 121-126 (6 aa, extracellular); "
           "deletion split TM 151-152 / intracellular 153-160; whole identity %.1f%%"
           % g["seq_identity_whole_pct"])

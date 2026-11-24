@@ -443,7 +443,21 @@ def unmatched_residues(seqA, seqB, pairs, regions=None):
         nxt_b[i] = last
 
     def reg(i):
-        return regions[i] if regions and i is not None and i < len(regions) else None
+        """The region of reference residue i; None outside any region ('.' -> "other")."""
+        if not regions or i is None or i >= len(regions):
+            return None
+        return None if regions[i] == "other" else regions[i]
+
+    # how a stretch relates to the regions, for wording it: "inside" one region, at a
+    # "terminal" or region "boundary", "outside" any region, or "no topology" at all
+    def placement(region, where, flanks):
+        if not regions:
+            return "no topology"
+        if region:
+            return "inside"
+        if where != "internal":
+            return "terminal"
+        return "outside" if not any(flanks) else "boundary"
 
     target_only, t_by_region = [], {}
     for j0, j1 in _runs([j for j in range(len(seqB)) if j not in a_of_b]):
@@ -456,6 +470,7 @@ def unmatched_residues(seqA, seqB, pairs, regions=None):
             t_by_region[region] = t_by_region.get(region, 0) + n
         target_only.append({"start": j0 + 1, "end": j1 + 1, "length": n, "where": where,
                             "region": region,
+                            "placement": placement(region, where, [reg(before), reg(after)]),
                             "reference_before": None if before is None else before + 1,
                             "reference_after": None if after is None else after + 1,
                             "flank_regions": [reg(before), reg(after)]})
@@ -480,6 +495,8 @@ def unmatched_residues(seqA, seqB, pairs, regions=None):
             r_by_region[region] = r_by_region.get(region, 0) + n
         reference_only.append({"start": i0 + 1, "end": i1 + 1, "length": n, "where": where,
                                "region": region,
+                               "placement": ("no topology" if not regions else
+                                             "inside" if region else "outside"),
                                "target_before": None if before is None else before + 1,
                                "target_after": None if after is None else after + 1})
     return {"target_only": target_only, "reference_only": reference_only,

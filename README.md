@@ -370,9 +370,18 @@ this threshold is not calibrated here.
   borrowed boundaries land where the alignment puts them (mouse CD3E's borrowed helix falls at
   109-134, exactly where mouse's own UniProt entry puts it), but a species-specific change in
   topology would not be seen.
-- **Alignment ends are free** (semi-global): an extension at one end of a protein is not forced
-  into alignment with the other protein's start, so it stays one stretch. Orthologs of similar
-  length give the same numbers either way.
+- **Alignment ends are free** (semi-global, as in EMBOSS needle's default): an extension at one
+  end of a protein is not forced into alignment with the other protein's start, so it stays one
+  stretch. Naked mole-rat THY1 from Ensembl is the case in point: its first ~95 residues are a
+  proline/serine-rich sequence with no counterpart in any species (and no initiator Met), and
+  they are now reported as one N-terminal stretch. Orthologs of similar length give the same
+  numbers either way (CD3E human/mouse/rabbit vs dog: identical). The trade-off: a long
+  insertion just inside a terminus can be reported as a terminal overhang. Rat CD3E
+  A0A8I6AAG4 has 74 extra residues after residue 16 of its signal peptide; free ends report
+  rat 1-74 as N-terminal and align the dog signal peptide to the inserted stretch. The mature
+  regions (extracellular, transmembrane, intracellular) align the same either way; only the
+  signal peptide and so the overall figure move (rat vs dog overall 62.2% -> 58.4%). No end-gap
+  setting got all three cases right (random extension, rat insertion, naked mole-rat THY1).
 
 ## Components
 

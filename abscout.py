@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -1412,10 +1412,12 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
                      f'<table><tr><th>Part</th><th>Target residues</th><th>Length</th>'
                      f'<th>Note</th></tr>{trs}</table>')
 
-    def region_text(region, where):
-        if region:
-            return PART_LABELS.get(region, region)
-        return "none (at a terminus)" if where != "internal" else "none (at a region boundary)"
+    def region_text(u):
+        return {"inside": PART_LABELS.get(u.get("region"), u.get("region")),
+                "terminal": "none (at a terminus)",
+                "boundary": "none (at a region boundary)",
+                "outside": "none (outside any region)",
+                "no topology": "&mdash;"}.get(u.get("placement"), "&mdash;")
 
     shared = {}
     for m in rows:
@@ -1423,12 +1425,11 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
             e = shared.setdefault((u["start"], u["end"]), {"u": u, "species": [],
                                                            "regions": set()})
             e["species"].append(m["common"])
-            e["regions"].add(u["region"])
+            e["regions"].add(region_text(u))
     um_rows, n_um = "", 0
     for (a, b), e in sorted(shared.items()):
         u = e["u"]
-        reg = (region_text(next(iter(e["regions"])), u["where"]) if len(e["regions"]) == 1
-               else "varies by species")
+        reg = next(iter(e["regions"])) if len(e["regions"]) == 1 else "varies by species"
         pos = (u["where"] if u["where"] != "internal"
                else f'internal, between target {a - 1} and {b + 1}')
         um_rows += (f'<tr><td class="lbl"><b>Target</b></td><td>{a}&ndash;{b}</td>'
@@ -1442,7 +1443,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
                    f'{u["target_after"]}')
             um_rows += (f'<tr><td class="lbl">{m["common"].capitalize()}</td>'
                         f'<td>{u["start"]}&ndash;{u["end"]}</td><td>{u["length"]}</td>'
-                        f'<td class="lbl">{pos}</td><td>{region_text(u["region"], u["where"])}</td>'
+                        f'<td class="lbl">{pos}</td><td>{region_text(u)}</td>'
                         f'<td>&mdash;</td></tr>')
             n_um += 1
     unmatched_html = ""

@@ -989,6 +989,11 @@ def test_soluble_from_reviewed_entries_unknown_otherwise():
         assert calls == [] and models and all(m.get("soluble") for m in models), models
         note = " ".join(resolved["notes"])
         assert "soluble protein" in note and "human P07766 is a reviewed" in note, note
+        # a soluble protein has no regions, so unmatched stretches get no region wording
+        html = ab.render_html("CD3E", {"species": "dog", "uniprot": "P27597", "taxid": 9615},
+                              models, None, notes=resolved["notes"])
+        assert "Residues present in only one protein" in html
+        assert "none (at a" not in html and "none (outside" not in html, "regionless wording"
 
     for kind, says in (("unknown", "no species has a curated topology"),
                        ("membrane", "annotates membrane segments for human P07766")):
