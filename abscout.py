@@ -42,7 +42,7 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
@@ -809,7 +809,9 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     models = [o for o in usable if not o["is_target"]]
     if not targets:
         raise AbScoutError(no_target_message(gene, target_taxid, resolved))
-    notes = []                  # everything that qualifies the numbers; travels to JSON / CSV
+    # everything that qualifies the numbers; travels to JSON / CSV. Starts with what the
+    # ortholog lookup itself had to say (a symbol that is also another gene's synonym).
+    notes = list(resolved.get("notes") or [])
 
     # ---- a sequence for every Compara ortholog ---------------------------------------------
     # UniProt deletes unreviewed entries that are not part of a reference proteome, and
@@ -840,13 +842,17 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
 
     # ---- the target sequence --------------------------------------------------------------
     # Every identity in the run is measured against this one sequence, so taking whichever
-    # ortholog Ensembl happened to list first was the weakest link in the pipeline: mouse
-    # CDH1 gave both an 884 aa entry and a 493 aa fragment, and the fragment won by position
-    # alone. Rank the candidates exactly as the models are ranked.
+    # ortholog Ensembl happened to list first was the weakest link in the pipeline. Rank the
+    # candidates exactly as the models are ranked.
+    #
+    # The case this was written for, mouse CDH1 coming back as an 884 aa entry and a reviewed
+    # 493 aa "fragment" (Q9R1K5), was misread at the time: Q9R1K5 is mouse Fzr1, returned
+    # because the symbol CDH1 is also a synonym of FZR1. The resolver now sets that gene
+    # aside before it gets here (ro.select_symbol_gene). The ranking stays, for species where
+    # Compara really does return several orthologs of one gene.
     def rank_against(longest):
-        # Completeness outranks curation. Swiss-Prot carries short entries -- mouse CDH1 is
-        # reviewed at 493 aa while the full 884 aa entry is unreviewed -- so ranking on
-        # review status first would pick the fragment and deflate every identity in the run.
+        # Completeness outranks curation: a reviewed entry can be partial, and ranking on
+        # review status first would then pick it and deflate every identity in the run.
         def rank(item):                         # higher is better; fully deterministic
             o, seq = item
             return (len(seq) >= 0.6 * longest,          # not truncated vs the best available
@@ -882,8 +888,8 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
                      f"{len(models)} model orthologs to compare\n")
 
     # ---- one ortholog per model species -------------------------------------------------
-    # Compara can return several orthologs for one species (CD3E gave two rabbit entries,
-    # CDH1 two mouse). Keeping them all is wrong three ways: "will a rabbit antibody work"
+    # Compara can return several orthologs for one species (CD3E gave two rabbit entries).
+    # Keeping them all is wrong three ways: "will a rabbit antibody work"
     # has one answer per species, the duplicates run TMbed twice, and downstream the epitope
     # tables are keyed by species name so the second entry silently overwrote the first.
     # Pick the best representative deterministically and record what was set aside.
@@ -924,10 +930,11 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
 
     # ---- rescue partial models before anything is derived from them ----------------------
     # A model much shorter than the target is a partial entry: its regions would be missing
-    # and its identity deflated. Swiss-Prot carries short entries too (human CDH1 resolved to
-    # a 496 aa reviewed accession against an 882 aa protein), so before giving up, look for a
-    # longer entry for this gene and species. Only reached when the length already looks
-    # wrong, and a reviewed accession is only ever swapped for another reviewed one.
+    # and its identity deflated. A reviewed entry can be partial too, so before giving up,
+    # look for a longer entry for this gene and species. Only reached when the length already
+    # looks wrong, and a reviewed accession is only ever swapped for another reviewed one.
+    # (The 496 aa "partial human CDH1" this was first seen on, Q9UM11, was FZR1: the wrong
+    # gene, not a short entry. See ro.select_symbol_gene.)
     rescued = []
     for m, mseq in chosen:
         if len(mseq) < 0.6 * len(target_seq) and from_uniprot(m):
@@ -1177,6 +1184,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
                                   "overall_similarity": res["global"]["similarity_pct"],
                                   "radical_subs": res["global"]["radical_subs"],
                                   "coverage_pct": res["global"]["coverage_pct"],
+                                  "alignment_ends": res["global"].get("alignment_ends"),
                                   "length": len(mseq)})
             model_seqs.append((m["common"], mseq))
         except Exception as exc:                       # skip a model rather than abort the run

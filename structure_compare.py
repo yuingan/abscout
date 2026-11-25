@@ -300,25 +300,82 @@ def score_substitutions(pairs_ab):
             "mean_grantham_subs": (round(gsum / gn, 1) if gn else None)}
 
 
-def correspondence_seq(A, B):
-    """Sequence-alignment-based aligned index pairs (fallback). Returns (pairs, info)."""
+# ----------------------------------------------------------------------------------
+# Sequence alignment
+#
+# Two proteins are aligned twice and the better alignment is kept.
+#
+#   free ends    an overhang at either end costs nothing. Right when one protein simply
+#                carries an extension: naked mole-rat THY1 starts with 95 residues that mouse
+#                THY1 does not have, and they stay one unmatched stretch.
+#   end to end   an overhang costs what any other gap costs. Right when the extra residues
+#                are an insertion close to an end: dog NCAM1 has 254 more residues than human
+#                NCAM1 inside the cytoplasmic tail, 40 residues before the C-terminus.
+#
+# Neither rule gets both. With free ends, stopping early costs nothing while opening a
+# 254-residue gap costs more than the 40 residues beyond it are worth, so those 40 were
+# paired with the start of the insertion (5 identical; their true partners give 39) and
+# human-dog intracellular identity read 71.6% where it is 98.3%. End to end, the mole-rat
+# extension is split in two and 12 of its residues are pulled onto the mouse signal peptide.
+#
+# So both are computed and scored by one yardstick (_common_score): BLOSUM62 over the
+# aligned pairs, overhanging ends free, and an internal gap charged as the aligner charges
+# it but never more than LONG_GAP_CAP -- a long insertion is one event, however long it is.
+# The higher score wins; a tie keeps the free-ends alignment. Most pairs give the same
+# alignment either way, and then there is nothing to choose.
+#
+# Checked against Ensembl Compara's own alignments of the same sequences (36 antibody targets,
+# human against 9 species, November 2026): of 307 pairs this rule changes 7, all NCAM1, and
+# each then gives exactly Compara's intracellular count (dog 117 of 119 identical, where the
+# free-ends alignment alone gave 83 of 116). Across the 278 mammal pairs it pairs 97.7% of
+# residues as Compara does. It does not cure everything: in 5 of those pairs, all with one
+# protein much longer than the other, it still finds 5-7 fewer identical residues.
+# ----------------------------------------------------------------------------------
+GAP_OPEN = 11             # the first residue of a gap (BLAST's defaults for BLOSUM62)
+GAP_EXTEND = 1            # each further residue
+LONG_GAP_CAP = 30         # the most one internal gap can cost when the candidates are compared
+
+
+def _align(seq_a, seq_b, free_ends):
+    """Global BLOSUM62 alignment as (index in a, index in b) pairs, 0-based."""
     aligner = PairwiseAligner()
     aligner.mode = "global"
     aligner.substitution_matrix = _BLOSUM62
-    aligner.open_gap_score = -11
-    aligner.extend_gap_score = -1
-    # Overhanging ends are free (semi-global): two orthologs of different length should line
-    # up where they are homologous, and an extension at one end should stay one stretch.
-    # When ends cost like internal gaps, a 95-residue N-terminal extension was split, with a
-    # few of its residues pulled onto the other protein's start. Orthologs of similar length
-    # give the same numbers either way (CD3E human/mouse/rabbit vs dog: identical).
-    aligner.end_gap_score = 0
-    aln = aligner.align(A["seq"], B["seq"])[0]
+    aligner.open_gap_score = -GAP_OPEN
+    aligner.extend_gap_score = -GAP_EXTEND
+    if free_ends:
+        aligner.end_gap_score = 0
+    aln = aligner.align(seq_a, seq_b)[0]
     pairs = []
     for (a0, a1), (b0, b1) in zip(*aln.aligned):
-        for k in range(a1 - a0):
-            pairs.append((a0 + k, b0 + k))
-    return pairs, {"engine": "biopython/sequence"}
+        for k in range(int(a1) - int(a0)):
+            pairs.append((int(a0) + k, int(b0) + k))
+    return pairs
+
+
+def _common_score(seq_a, seq_b, pairs, cap=LONG_GAP_CAP):
+    """One yardstick for both candidate alignments (see the note above)."""
+    score = float(sum(_BLOSUM62[seq_a[a], seq_b[b]] for a, b in pairs))
+    for (a0, b0), (a1, b1) in zip(pairs, pairs[1:]):
+        for length in (a1 - a0 - 1, b1 - b0 - 1):
+            if length > 0:
+                score -= min(GAP_OPEN + GAP_EXTEND * (length - 1), cap)
+    return score
+
+
+def correspondence_seq(A, B):
+    """
+    Aligned residue pairs of two sequences. Returns (pairs, info); info["ends"] says which
+    of the two candidate alignments was kept, "free" or "end to end".
+    """
+    seq_a, seq_b = A["seq"], B["seq"]
+    free = _align(seq_a, seq_b, free_ends=True)
+    whole = _align(seq_a, seq_b, free_ends=False)
+    ends = "free"
+    if whole != free and _common_score(seq_a, seq_b, whole) > _common_score(seq_a, seq_b, free):
+        ends = "end to end"
+    return (whole if ends == "end to end" else free), {"engine": "biopython/sequence",
+                                                        "ends": ends}
 
 
 # ----------------------------------------------------------------------------------
@@ -547,7 +604,7 @@ def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
     immunogen region). If given, the result includes conservation of exactly that region in
     the target -- the direct "will this specific antibody cross-react" signal.
     """
-    pairs, _ = correspondence_seq({"seq": seqA}, {"seq": seqB})
+    pairs, aln_info = correspondence_seq({"seq": seqA}, {"seq": seqB})
     if not pairs:
         raise ValueError("No aligned residues between the two sequences.")
     pairs = sorted(pairs)
@@ -574,7 +631,9 @@ def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
                          "mean_grantham_subs": g_score["mean_grantham_subs"],
                          "seq_identity_whole_pct": round(100 * identical / whole_den, 1),
                          "target_only_residues": um["target_only_total"],
-                         "reference_only_residues": um["reference_only_total"]},
+                         "reference_only_residues": um["reference_only_total"],
+                         # which of the two candidate alignments was kept (correspondence_seq)
+                         "alignment_ends": aln_info.get("ends")},
               "regions": {},
               "unmatched": {"target_only": um["target_only"],
                             "reference_only": um["reference_only"]}}

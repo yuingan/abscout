@@ -285,9 +285,121 @@ def test_project_topology():
           "insertion at a boundary stays '.'")
 
 
+def _diverge(seq, every, seed):
+    """seq with one residue in `every` replaced by a different one (a diverged ortholog)."""
+    import random
+    r = random.Random(seed)
+    out = list(seq)
+    for i in range(0, len(seq), every):
+        out[i] = r.choice([c for c in "ACDEFGHIKLMNPQRSTVWY" if c != seq[i]])
+    return "".join(out)
+
+
+def test_long_insertion_close_to_an_end():
+    """Dog NCAM1 case: 254 residues more than human inside the cytoplasmic tail, 40 residues
+    before the C-terminus. With free ends alone the aligner stopped early instead of opening
+    the long gap and paired the last 40 human residues with the start of the insertion (5 of
+    40 identical; their true partners give 39), so intracellular identity read 71.6% where it
+    is 98.3%. The residues beyond the insertion must pair with their real partners, at either
+    end of the protein, and the insertion must come out as one internal stretch."""
+    A = _protein(400, 3)
+    ins = _protein(270, 4)
+    topo = "o" * 250 + "H" * 21 + "i" * 129
+    for label, B, lo in (("identical", A[:365] + ins + A[365:], 100.0),
+                         ("diverged", _diverge(A[:365], 7, 5) + ins + _diverge(A[365:], 7, 6),
+                          80.0)):
+        tail_true = [(i, i + 270) for i in range(365, 400)]
+        pairs, info = sc.correspondence_seq({"seq": A}, {"seq": B})
+        assert info["ends"] == "end to end", (label, info)
+        # (a mismatched residue right at the insertion may sit on either side of the gap)
+        kept = len(set(tail_true) & set(pairs))
+        assert kept >= 33, (label, kept, "residues beyond the insertion mis-paired")
+        # the free-ends alignment on its own is the failure being guarded against
+        free = sc._align(A, B, free_ends=True)
+        assert not set(tail_true) & set(free), (label, "free ends alone no longer fails?")
+        res = sc.compare_sequences(A, B, ref_topology=topo)
+        ic = res["regions"]["intracellular"]
+        assert ic["seq_identity_pct"] >= lo and ic["aligned_residues"] == 129, (label, ic)
+        assert res["global"]["alignment_ends"] == "end to end", res["global"]
+        t_only = res["unmatched"]["target_only"]
+        assert [(r["length"], r["where"], r["region"], r["placement"]) for r in t_only] == [
+            (270, "internal", "intracellular", "inside")], (label, t_only)
+        assert abs(t_only[0]["start"] - 366) <= 2, t_only
+    # the same thing at the other end: the insertion 35 residues after the N-terminus
+    B = A[:35] + ins + A[35:]
+    pairs, info = sc.correspondence_seq({"seq": A}, {"seq": B})
+    assert info["ends"] == "end to end", info
+    assert sum(A[i] == B[j] for i, j in pairs) == 400 and len(pairs) == 400, len(pairs)
+    print("long insertion near an end OK: residues beyond a 270-residue insertion keep their "
+          "partners (C- and N-terminal side), one internal stretch, alignment end to end")
+
+
+def test_end_extension_stays_one_stretch():
+    """The other half of the rule. An extension at one end is not an insertion: it must stay
+    one unmatched stretch and the rest must align as if it were not there. Ordinary pairs,
+    where both candidate alignments agree, are reported as free-ends."""
+    A = _protein(207, 7)
+    for B, where, at in ((_protein(95, 9) + A, "N-terminal", (1, 95)),
+                         (A + _protein(95, 9), "C-terminal", (208, 302))):
+        pairs, info = sc.correspondence_seq({"seq": A}, {"seq": B})
+        assert info["ends"] == "free", info
+        res = sc.compare_sequences(A, B)
+        t_only = res["unmatched"]["target_only"]
+        assert [(r["start"], r["end"], r["where"]) for r in t_only] == [(at[0], at[1], where)], t_only
+        assert res["global"]["seq_identity_pct"] == 100.0 and res["global"]["aligned_residues"] == 207
+    same, info = sc.correspondence_seq({"seq": A}, {"seq": _diverge(A, 5, 2)})
+    assert info["ends"] == "free" and len(same) == 207, info
+    # the yardstick itself: pairs score BLOSUM62, a long internal gap costs the cap, ends are free
+    s = sc._common_score("WWWW", "WWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWW", [(0, 0), (1, 1), (2, 42), (3, 43)])
+    assert s == 4 * 11 - sc.LONG_GAP_CAP, s
+    assert sc._common_score("WWWW", "AAAAAAAAAAWWWW", [(0, 10), (1, 11), (2, 12), (3, 13)]) == 44.0
+    assert sc._common_score("WWAWW", "WWWW", [(0, 0), (1, 1), (3, 2), (4, 3)]) == 44.0 - sc.GAP_OPEN
+    print("end extension OK: 95 residues at either end stay one stretch, free-ends alignment "
+          "kept; yardstick charges a 40-residue internal gap %d, an overhang nothing"
+          % sc.LONG_GAP_CAP)
+
+
+# Real sequences, as Ensembl Compara holds them (November 2026): mouse THY1 and the naked
+# mole-rat THY1 translation, whose first 95 residues have no counterpart in other species.
+THY1_MOUSE = ("MNPAISVALLLSVLQVSRGQKVTSLTACLVNQNLRLDCRHENNTKDNSIQHEFSLTREKRKHVLSGTLGIPEHTYRSRVT"
+              "LSNQPYIKVLTLANFTTKDEGDYFCELQVSGANPMSSNKSISVYRDKLVKCGGISLLVQNTSWMLLLLLSLSLLQALDFI"
+              "SL")
+THY1_NMR = ("CSLGCPTLIPGSQSLPPQARPAATGLPEVPLLQERATFLHPGSTATSSRAPRHPRPLPSASHWLSPGPSPSPSPPPLVKT"
+            "AGSVQGAATGGGSIASRGSCSGGGRGPVLQVSRGQKVTSLTACLVNQTLRLDCHHENTTTLPVQYEFSLTREKKKHVLFG"
+            "TMGVPEHAYRSRTNLTSNYNLKVLYLANFTNKDEGTYTCELRISGQQSIPNYKNVSVLRDKLVKCEGISLLAQNTSWLLL"
+            "LLLSLSLLQATDFVSL")
+
+
+def test_real_thy1_extension_is_not_split():
+    """Naked mole-rat THY1 against mouse THY1: the case the free-ends alignment was introduced
+    for. Aligned end to end, the 95-residue N-terminal extension is broken up, some of its
+    residues paired with the start of the mouse protein. The two candidates differ here, so
+    this is a real choice, and the free-ends alignment must be the one kept: the extension
+    one stretch, 1-95, and the mouse signal peptide on the mole-rat's own."""
+    free = sc._align(THY1_MOUSE, THY1_NMR, free_ends=True)
+    whole = sc._align(THY1_MOUSE, THY1_NMR, free_ends=False)
+    assert free != whole, "the two candidates agree: this test no longer exercises the choice"
+    paired_in_extension = [j for _, j in whole if j < 95]
+    assert paired_in_extension, "end to end no longer pulls extension residues onto mouse?"
+    assert sc._common_score(THY1_MOUSE, THY1_NMR, free) > sc._common_score(
+        THY1_MOUSE, THY1_NMR, whole)
+    pairs, info = sc.correspondence_seq({"seq": THY1_MOUSE}, {"seq": THY1_NMR})
+    assert info["ends"] == "free" and pairs == free, info
+    res = sc.compare_sequences(THY1_MOUSE, THY1_NMR)
+    assert [(r["start"], r["end"], r["where"]) for r in res["unmatched"]["target_only"]] == [
+        (1, 95, "N-terminal")], res["unmatched"]["target_only"]
+    assert res["global"]["aligned_residues"] == 161 and res["global"]["alignment_ends"] == "free"
+    print("real THY1 OK: mole-rat extension 1-95 stays one stretch (end to end would pair %d of "
+          "its residues with mouse); %d of 161 aligned residues identical"
+          % (len(paired_in_extension), sum(THY1_MOUSE[i] == THY1_NMR[j] for i, j in pairs)))
+
+
 if __name__ == "__main__":
     test_unmatched_stretches_and_whole_identity()
     test_project_topology()
+    test_long_insertion_close_to_an_end()
+    test_end_extension_stays_one_stretch()
+    test_real_thy1_extension_is_not_split()
     main()
     test_conservation_scoring()
     print("\nALL STRUCTURE-COMPARE TESTS PASSED")

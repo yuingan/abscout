@@ -203,6 +203,127 @@ def test_ensembl_protein_sequence():
     print("Ensembl protein sequence OK: stop codon stripped, no answer -> None")
 
 
+# --- the shape of Ensembl's real answer for the symbol CDH1: two human genes ---
+CDH1_TWO_GENES = [
+    {"id": "ENSG00000105325", "homologies": [                           # FZR1
+        {"species": "mus_musculus", "id": "ENSMUSG_FZR1", "protein_id": "ENSMUSP_FZR1",
+         "type": "ortholog_one2one"},
+        {"species": "canis_lupus_familiaris", "id": "ENSCAFG_FZR1", "protein_id": "ENSCAFP_FZR1",
+         "type": "ortholog_one2one"}]},
+    {"id": "ENSG00000039068", "homologies": [                           # CDH1, E-cadherin
+        {"species": "mus_musculus", "id": "ENSMUSG_CDH1", "protein_id": "ENSMUSP_CDH1",
+         "type": "ortholog_one2one"},
+        {"species": "canis_lupus_familiaris", "id": "ENSCAFG_CDH1", "protein_id": "ENSCAFP_CDH1",
+         "type": "ortholog_one2one"}]},
+]
+CDH1_XREF = {"ENSG00000039068": "P12830", "ENSMUSP_CDH1": "P09803", "ENSCAFP_CDH1": "DOG_ECAD",
+             "ENSG00000105325": "Q9UM11", "ENSMUSP_FZR1": "Q9R1K5", "ENSCAFP_FZR1": "DOG_FZR1"}
+
+
+def _symbol_stubs(data, names, lookups):
+    """ensembl_get for a symbol query: homology, official-symbol lookups, reviewed xrefs."""
+    def fake_get(path, params=None):
+        if path.startswith("/homology/symbol/human/"):
+            return {"data": data}
+        if path.startswith("/lookup/id/"):
+            gid = path.rsplit("/", 1)[-1]
+            lookups.append(gid)
+            return {"id": gid, "display_name": names[gid]} if names.get(gid) else None
+        if path.startswith("/xrefs/id/"):
+            eid = path.rsplit("/", 1)[-1]
+            reviewed = ("external_db", "Uniprot/SWISSPROT") in (params or [])
+            return [{"primary_id": CDH1_XREF[eid]}] if reviewed and eid in CDH1_XREF else []
+        return None
+    return fake_get
+
+
+def test_symbol_that_is_also_a_synonym_keeps_the_named_gene():
+    """Real case: Ensembl answers the symbol CDH1 with two human genes, CDH1 (E-cadherin) and
+    FZR1, which carries CDH1 as a synonym, in no fixed order. Their orthologs used to be
+    pooled. Only E-cadherin's may be used, whichever gene is listed first, and what was set
+    aside is reported."""
+    names = {"ENSG00000039068": "CDH1", "ENSG00000105325": "FZR1"}
+    saved = (ro.ensembl_get, ro.uniprot_by_gene_organism, ro.upgrade_partial)
+    ro.uniprot_by_gene_organism = lambda g, t: (None, None)
+    ro.upgrade_partial = lambda acc, status, gene, taxid, ratio=1.3: (acc, status, "")
+    fzr1 = {"Q9UM11", "Q9R1K5", "DOG_FZR1"}
+    try:
+        for data in (CDH1_TWO_GENES, CDH1_TWO_GENES[::-1]):
+            for typed in ("CDH1", "cdh1"):
+                ro.ensembl_get = _symbol_stubs(data, names, [])
+                res = ro.resolve(typed, 9615)
+                got = {o["common"]: o["uniprot"] for o in res["orthologs"]}
+                assert res["human_gene_id"] == "ENSG00000039068", res["human_gene_id"]
+                assert got == {"human": "P12830", "mouse": "P09803",
+                               "canis_lupus_familiaris": "DOG_ECAD"}, got
+                assert not fzr1 & {o["uniprot"] for o in res["orthologs"]}, res["orthologs"]
+                assert len(res["notes"]) == 1 and "FZR1 (ENSG00000105325)" in res["notes"][0] \
+                    and "ENSG00000039068" in res["notes"][0], res["notes"]
+        # the other gene's symbol could not be looked up: the named gene is still certain
+        ro.ensembl_get = _symbol_stubs(CDH1_TWO_GENES, {"ENSG00000039068": "CDH1"}, [])
+        res = ro.resolve("CDH1", 9615)
+        assert res["human_gene_id"] == "ENSG00000039068", res
+        assert "ENSG00000105325 (symbol could not be looked up)" in res["notes"][0], res["notes"]
+    finally:
+        ro.ensembl_get, ro.uniprot_by_gene_organism, ro.upgrade_partial = saved
+    print("symbol check OK: CDH1 keeps E-cadherin and sets FZR1 aside, either order, any case")
+
+
+def test_synonym_of_several_genes_is_refused():
+    """A symbol that is nobody's official symbol and a synonym of two genes: nothing can tell
+    which was meant, so the run stops and lists them instead of pooling or guessing."""
+    data = [{"id": "ENSG_A", "homologies": [{"species": "mus_musculus", "id": "MA",
+                                             "protein_id": "PA", "type": "ortholog_one2one"}]},
+            {"id": "ENSG_B", "homologies": [{"species": "mus_musculus", "id": "MB",
+                                             "protein_id": "PB", "type": "ortholog_one2one"}]}]
+    saved = ro.ensembl_get
+    try:
+        ro.ensembl_get = _symbol_stubs(data, {"ENSG_A": "GENEA", "ENSG_B": "GENEB"}, [])
+        try:
+            ro.resolve("OLDNAME", 10090)
+            raise AssertionError("an ambiguous synonym must not resolve")
+        except ro.AmbiguousSymbol as exc:
+            msg = str(exc)
+            assert "GENEA (ENSG_A)" in msg and "GENEB (ENSG_B)" in msg, msg
+            assert "official symbol" in msg, msg
+            assert isinstance(exc, ValueError)        # reported like any other bad input
+        # Ensembl could not be asked for the symbols at all: say that, do not guess
+        ro.ensembl_get = _symbol_stubs(data, {}, [])
+        try:
+            ro.resolve("OLDNAME", 10090)
+            raise AssertionError("must not resolve when the symbols cannot be checked")
+        except ro.AmbiguousSymbol as exc:
+            assert "Run it again" in str(exc), exc
+    finally:
+        ro.ensembl_get = saved
+    print("symbol check OK: a synonym shared by two genes is refused, with both named")
+
+
+def test_one_gene_per_symbol_costs_no_extra_request():
+    """The ordinary case, one human gene for the symbol (official or synonym), is untouched:
+    no official-symbol lookup, no note. Two genes that both officially carry the symbol are
+    kept together, as before."""
+    lookups = []
+    saved = (ro.ensembl_get, ro.uniprot_by_gene_organism, ro.upgrade_partial)
+    ro.uniprot_by_gene_organism = lambda g, t: (None, None)
+    ro.upgrade_partial = lambda acc, status, gene, taxid, ratio=1.3: (acc, status, "")
+    try:
+        ro.ensembl_get = _symbol_stubs(CDH1_TWO_GENES[1:], {}, lookups)
+        res = ro.resolve("CDH1", 9615)
+        assert lookups == [] and res["notes"] == [], (lookups, res["notes"])
+        assert res["human_gene_id"] == "ENSG00000039068"
+        both = {"data": CDH1_TWO_GENES}
+        kept, note = None, None
+        ro.ensembl_get = _symbol_stubs(CDH1_TWO_GENES, {"ENSG00000039068": "SAME",
+                                                        "ENSG00000105325": "SAME"}, lookups)
+        kept, note = ro.select_symbol_gene("SAME", both)
+        assert kept is both and note is None, (kept, note)
+        assert ro.select_symbol_gene("X", None) == (None, None)       # the request failed
+    finally:
+        ro.ensembl_get, ro.uniprot_by_gene_organism, ro.upgrade_partial = saved
+    print("symbol check OK: one gene per symbol makes no lookup; same-symbol genes stay pooled")
+
+
 if __name__ == "__main__":
     test_parse_homologies_condensed()
     test_parse_homologies_nested()
@@ -214,4 +335,7 @@ if __name__ == "__main__":
     test_reviewed_partial_is_upgraded_within_swissprot()
     test_compara_coverage_from_ensembl_genome_info()
     test_ensembl_protein_sequence()
+    test_symbol_that_is_also_a_synonym_keeps_the_named_gene()
+    test_synonym_of_several_genes_is_refused()
+    test_one_gene_per_symbol_costs_no_extra_request()
     print("\nALL RESOLVE-ORTHOLOGS TESTS PASSED")

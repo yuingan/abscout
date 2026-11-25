@@ -461,8 +461,10 @@ def test_one_ortholog_chosen_per_species(monkey=None):
 
 
 def test_short_reviewed_model_is_rescued_not_skipped():
-    """A short reviewed model (human CDH1 496 aa vs 882) must be upgraded, not dropped --
-    dropping it also took out the epitope reference and failed the whole case."""
+    """A short reviewed model must be upgraded, not dropped -- dropping it also took out the
+    epitope reference and failed the whole case. (First seen as "human CDH1, 496 aa vs 882";
+    that 496 aa entry, Q9UM11, was FZR1, a different gene that carries CDH1 as a synonym, and
+    the resolver now sets it aside. The rule still holds for an entry that really is short.)"""
     import resolve_orthologs as ro
     block = "ACDEFGHIKLMNPQRSTVWY"
     full, short = block * 44, block * 24                 # 880 aa vs 480 aa
@@ -475,11 +477,12 @@ def test_short_reviewed_model_is_rescued_not_skipped():
                 "orthology_type": "ortholog_one2one", "is_target": is_t}
 
     saved = (ro.resolve, ab.fetch_uniprot_seq, ab.uniprot_topology,
-             ab.run_tmbed, ro.upgrade_partial)
+             ab.run_tmbed, ro.upgrade_partial, ab.uniprot_nterm)
     ro.resolve = lambda g, t: {"gene": g, "target_taxid": t, "orthologs": [
         o("human", "SHORT_REV", "reviewed", 9606),
         o("target", "TGT", "reviewed", 10181, True)]}
     ab.fetch_uniprot_seq = lambda acc: seqs[acc]
+    ab.uniprot_nterm = lambda acc, n: None       # the numbering check must not reach UniProt
     ab.uniprot_topology = lambda acc, n: ("o" * 20 + "H" * 20 + "i" * (n - 40), "tm")
     ab.run_tmbed = lambda *a, **k: (_ for _ in ()).throw(AssertionError("TMbed should not run"))
 
@@ -492,7 +495,7 @@ def test_short_reviewed_model_is_rescued_not_skipped():
             "CDH1", 10181, "/tmp", epitope=(1, 20), epitope_ref="human")
     finally:
         (ro.resolve, ab.fetch_uniprot_seq, ab.uniprot_topology,
-         ab.run_tmbed, ro.upgrade_partial) = saved
+         ab.run_tmbed, ro.upgrade_partial, ab.uniprot_nterm) = saved
 
     assert upgrade_args == [("SHORT_REV", "reviewed")], upgrade_args
     assert len(models) == 1 and models[0]["uniprot"] == "FULL_REV", models
@@ -529,14 +532,16 @@ def test_full_length_model_costs_no_extra_lookup():
 
 
 def _stub_run(ro_mod, orths, seqs, curated=None, tmbed=None, upgrade=None, topology=None,
-              reviewed=None, tmbed_ok=True):
+              reviewed=None, tmbed_ok=True, resolver_notes=None):
     """Run analyze() with the network stubbed out. Returns (resolved, target, models, tmbed_calls)."""
     calls = []
     saved = (ro_mod.resolve, ab.fetch_uniprot_seq, ab.uniprot_topology,
              ab.run_tmbed, ro_mod.upgrade_partial, ab.reviewed_alternatives, ab.tmbed_available)
     ab.tmbed_available = lambda: tmbed_ok
     ab.reviewed_alternatives = reviewed or (lambda gene, taxid: [])
-    ro_mod.resolve = lambda g, t: {"gene": g, "target_taxid": t, "orthologs": orths}
+    ro_mod.resolve = lambda g, t: dict({"gene": g, "target_taxid": t, "orthologs": orths},
+                                       **({"notes": list(resolver_notes)} if resolver_notes
+                                          else {}))
     ab.fetch_uniprot_seq = lambda acc: seqs[acc]
     _cur = curated or (lambda acc, n: None)
     # default: a curated topology where `curated` gives one, otherwise "UniProt could not
@@ -572,8 +577,10 @@ def _seq(n, seed=11):
 
 
 def test_target_prefers_complete_over_reviewed_fragment():
-    """Mouse CDH1: Q9R1K5 is reviewed at 493 aa, A0A0R4IZW5 unreviewed at 884. Every identity
-    is measured against the target, so completeness must outrank curation."""
+    """Every identity is measured against the target, so when Compara returns several
+    orthologs a complete entry must outrank a reviewed fragment. (Written for "mouse CDH1":
+    Q9R1K5 reviewed at 493 aa, A0A0R4IZW5 unreviewed at 884. Q9R1K5 is in fact mouse Fzr1,
+    returned because CDH1 is also a synonym of FZR1; the resolver now sets that gene aside.)"""
     import resolve_orthologs as ro
     full = _seq(884)
     seqs = {"FULL_TREMBL": full, "SHORT_REV": full[:493], "HUM": full}
@@ -707,9 +714,10 @@ def test_gpi_run_reports_extracellular_and_not_soluble():
 def test_no_compara_ortholog_message():
     """The message must say what actually happened rather than imply a retry will fix it."""
     import resolve_orthologs as ro
-    saved = ro.resolve
+    saved = (ro.resolve, ro.compara_genomes)
     ro.resolve = lambda g, t: {"gene": g, "target_taxid": t, "orthologs": [
         _orth("human", "HUM", "reviewed", 9606)]}          # no target ortholog at all
+    ro.compara_genomes = lambda taxid: [("Chicken", "gallus_gallus", True)]   # no network
     try:
         ab.analyze("ACTB", 9031, "/tmp")
     except ab.AbScoutError as e:
@@ -719,7 +727,7 @@ def test_no_compara_ortholog_message():
     else:
         raise AssertionError("a missing target ortholog must raise")
     finally:
-        ro.resolve = saved
+        ro.resolve, ro.compara_genomes = saved
     print("no-ortholog message OK: states the cause, declines name-based guessing")
 
 
@@ -1228,6 +1236,58 @@ def test_long_target_whole_protein_is_shown():
              hum["overall"], hum["overall_whole"]))
 
 
+def test_insertion_near_an_end_and_resolver_note_reach_the_report():
+    """Dog NCAM1 case, shown with real CD3E: a target with 110 extra residues inside the
+    cytoplasmic tail, 15 residues before its C-terminus. With free alignment ends alone those
+    last 15 residues were paired with the start of the insertion and intracellular identity
+    fell. They must keep their partners: the same intracellular identity as without the
+    insertion, the insertion listed as one internal stretch in the intracellular region, and
+    the JSON saying which alignment each comparison kept. A note from the ortholog lookup (a
+    symbol that also matches another gene) must travel to the report as well."""
+    import json, resolve_orthologs as ro
+    dog = REAL["P27597"]
+    seqs = dict(REAL, INS_DOG=dog[:-15] + _seq(110, seed=31) + dog[-15:])
+    free = ab.sc._align(REAL["P07766"], seqs["INS_DOG"], free_ends=True)
+    assert max(j for _, j in free) < len(seqs["INS_DOG"]) - 15, "free ends alone no longer fails?"
+    topo_h = "S" * 22 + "o" * 104 + "H" * 26 + "i" * 55
+    topology = lambda acc, n: ((topo_h, "tm") if acc == "P07766" else (None, ""))
+    note = ("the symbol GENEX also matches OTHER (ENSG_OTHER) in Ensembl; used the gene whose "
+            "official symbol is GENEX (ENSG_X)")
+
+    def run(target_acc, resolver_notes=None):
+        orths = [_orth("human", "P07766", "reviewed", 9606),
+                 _orth("mouse", "P22646", "reviewed", 10090),
+                 _orth("dog", target_acc, "reviewed", 9615, True)]
+        resolved, target, models, _ = _stub_run(ro, orths, seqs, tmbed_ok=False,
+                                                topology=topology, resolver_notes=resolver_notes)
+        return resolved, target, [m for m in models if m["common"] == "human"][0], models
+
+    _, _, plain, _ = run("P27597")
+    resolved, target, hum, models = run("INS_DOG", [note])
+    assert plain["alignment_ends"] == "free" and hum["alignment_ends"] == "end to end", (
+        plain["alignment_ends"], hum["alignment_ends"])
+    assert hum["regions"] == plain["regions"], (hum["regions"], plain["regions"])
+    assert hum["regions"]["intracellular"] > 80, hum["regions"]
+    t_only = hum["unmatched"]["target_only"]
+    assert [(u["length"], u["where"], u["region"]) for u in t_only if u["length"] > 20] == [
+        (110, "internal", "intracellular")], t_only
+    assert hum["regions_whole"]["intracellular"] < hum["regions"]["intracellular"] - 30, hum
+    assert resolved["notes"][0] == note, resolved["notes"]
+    report, result = ab.rank_and_report("GENEX", target, [target], models, None,
+                                        notes=resolved["notes"],
+                                        target_map=resolved["target_map"])
+    assert note in report, report
+    html = ab.render_html("GENEX", target, models, None, notes=resolved["notes"],
+                          regions=resolved["region_alignments"],
+                          target_map=resolved["target_map"])
+    assert "also matches OTHER (ENSG_OTHER)" in html, "the resolver note is missing from the HTML"
+    assert json.loads(json.dumps(result))["models"][0]["alignment_ends"] in ("free", "end to end")
+    print("insertion near an end OK: intracellular %.1f%% with and without a 110-residue "
+          "insertion 15 residues before the C-terminus (%.1f%% counting it); resolver note "
+          "in report, HTML and JSON" % (hum["regions"]["intracellular"],
+                                        hum["regions_whole"]["intracellular"]))
+
+
 if __name__ == "__main__":
     test_region_table_no_recommendation()
     test_handles_missing_region_and_paralogs()
@@ -1284,4 +1344,5 @@ if __name__ == "__main__":
     test_deleted_model_uses_ensembl_sequence_without_uniprot_lookups()
     test_no_sequence_anywhere_is_reported()
     test_long_target_whole_protein_is_shown()
+    test_insertion_near_an_end_and_resolver_note_reach_the_report()
     print("\nALL ABSCOUT TESTS PASSED")

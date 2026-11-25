@@ -370,18 +370,49 @@ this threshold is not calibrated here.
   borrowed boundaries land where the alignment puts them (mouse CD3E's borrowed helix falls at
   109-134, exactly where mouse's own UniProt entry puts it), but a species-specific change in
   topology would not be seen.
-- **Alignment ends are free** (semi-global, as in EMBOSS needle's default): an extension at one
-  end of a protein is not forced into alignment with the other protein's start, so it stays one
-  stretch. Naked mole-rat THY1 from Ensembl is the case in point: its first ~95 residues are a
-  proline/serine-rich sequence with no counterpart in any species (and no initiator Met), and
-  they are now reported as one N-terminal stretch. Orthologs of similar length give the same
-  numbers either way (CD3E human/mouse/rabbit vs dog: identical). The trade-off: a long
-  insertion just inside a terminus can be reported as a terminal overhang. Rat CD3E
-  A0A8I6AAG4 has 74 extra residues after residue 16 of its signal peptide; free ends report
-  rat 1-74 as N-terminal and align the dog signal peptide to the inserted stretch. The mature
+- **Each pair is aligned twice and the better alignment is kept.** One alignment leaves
+  overhanging ends free, the other runs end to end, and neither is right every time:
+  - *Free ends* suit a protein that simply carries an extension. Naked mole-rat THY1 from
+    Ensembl starts with ~95 proline/serine-rich residues that no other species has (and no
+    initiator Met); with free ends they stay one N-terminal stretch. Aligned end to end, the
+    stretch is broken up and 12 of its residues are paired with the mouse signal peptide.
+  - *End to end* suits an insertion close to an end. Dog NCAM1 has 254 more residues than human
+    NCAM1 inside the cytoplasmic tail, 40 residues before the C-terminus. With free ends alone,
+    stopping early cost nothing while opening that gap cost more than the last 40 residues
+    were worth, so they were paired with the start of the insertion and human-dog
+    intracellular identity read 71.6% where it is 98.3% (AbScout 0.9.0-0.9.2).
+
+  Both candidates are scored by one yardstick: BLOSUM62 over the aligned pairs, overhanging
+  ends free, and an internal gap charged the usual penalty (11 to open, 1 to extend) but
+  never more than 30, so a long insertion counts as one event however long it is. The higher
+  score is kept, a tie keeps the free-ends alignment, and the JSON records the choice per
+  comparison (`alignment_ends`: `free` or `end to end`). Most pairs give the same alignment
+  either way.
+
+  Checked against Ensembl Compara's own alignments of the same sequences, human against eight
+  mammals for 36 antibody targets (278 comparisons, November 2026): the two pair 98.9% of
+  residues the same way in the median comparison, and where the human protein has curated
+  regions (249 comparisons) region identity is within 5 percentage points in 245 of them for
+  the extracellular region, 227 for the transmembrane region and 221 for the intracellular
+  region. Compara aligns the whole gene family at once; AbScout aligns two proteins, because
+  it often compares a curated UniProt entry rather than Ensembl's own translation and has to
+  place immunogen peptides. Short, poorly conserved stretches (a transmembrane helix, a
+  cytoplasmic tail) can be lined up in several equally good ways, and there the two disagree
+  most; neither figure is exact there.
+
+  What remains: an insertion just inside a terminus can still be reported as a terminal
+  overhang when the residues beyond it are few or poorly conserved. Rat CD3E A0A8I6AAG4 has 74
+  extra residues after residue 16 of its signal peptide; they are reported as rat 1-74,
+  N-terminal, and the dog signal peptide is aligned to the inserted stretch. The mature
   regions (extracellular, transmembrane, intracellular) align the same either way; only the
-  signal peptide and so the overall figure move (rat vs dog overall 62.2% -> 58.4%). No end-gap
-  setting got all three cases right (random extension, rat insertion, naked mole-rat THY1).
+  signal peptide, and so the overall figure, moves.
+- **A gene symbol that is also another gene's synonym.** Ensembl's symbol lookup matches
+  synonyms, so one symbol can come back as two human genes: `CDH1` returns CDH1 (E-cadherin)
+  and FZR1, which lists CDH1 as a synonym. AbScout keeps the gene whose official symbol is
+  the one you typed, sets the other aside and says so in the notes. If a symbol is no gene's
+  official symbol and a synonym of several, AbScout stops and lists them: use the official
+  symbol of the one you mean. (Up to 0.9.2 the orthologs of both genes were pooled, and the
+  right protein was reached only because FZR1 is much shorter than E-cadherin.)
 
 ## Components
 

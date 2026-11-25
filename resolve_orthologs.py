@@ -9,6 +9,7 @@ feed straight into structure_compare.py / TMbed.
 
 Per run (Ensembl REST + UniProt REST, all lightweight API calls):
   1. /homology/symbol/human/<GENE>   Compara orthologues (condensed)  -> ortholog gene IDs per species
+     (/lookup/id/<gene> only when the symbol comes back as more than one human gene)
   2. /xrefs/id/<ensembl_id>          UniProt cross-reference          -> UniProt accession per ortholog
   3. UniProt gene+organism search    fallback if no xref              -> UniProt accession
 
@@ -136,9 +137,10 @@ def parse_xref_uniprot(resp):
     Return one UniProt accession from an Ensembl /xrefs/id response list.
 
     Ensembl can list several accessions for one gene and does not guarantee their order,
-    so taking whichever came first made the same query resolve differently between runs
-    (human CDH1 gave both the full-length entry and a 496 aa one). Sort first so a run is
-    reproducible; `upgrade_partial` then fixes the choice if a longer entry exists.
+    so sort first: a run must resolve the same way every time. `upgrade_partial` then fixes
+    the choice if a longer entry exists. (Human CDH1 was once given here as an example of a
+    gene with a full-length and a 496 aa accession. The 496 aa one, Q9UM11, is FZR1, a
+    different gene that carries CDH1 as a synonym: see select_symbol_gene.)
     """
     accs = sorted({x["primary_id"] for x in (resp or []) if x.get("primary_id")})
     return accs[0] if accs else None
@@ -227,9 +229,10 @@ def upgrade_partial(acc, status, gene, taxid, ratio=1.3):
     partial sequences that UniProt does not formally flag as fragments, which otherwise
     drop whole regions and deflate identity.
 
-    Applies to reviewed entries too: Swiss-Prot carries short entries (human CDH1 resolved
-    to a 496 aa reviewed accession against an 882 aa protein). A reviewed accession is only
-    ever replaced by another reviewed one, so curation is never traded away for length.
+    Applies to reviewed entries too, since a reviewed entry can be partial. A reviewed
+    accession is only ever replaced by another reviewed one, so curation is never traded
+    away for length. The search is by gene symbol and UniProt matches synonyms, so the
+    caller must check that what comes back is the same protein (abscout.ortholog_score).
     """
     cur = uniprot_length(acc)
     if not cur:
@@ -239,6 +242,66 @@ def upgrade_partial(acc, status, gene, taxid, ratio=1.3):
     if best_acc and best_acc != acc and best_len and best_len >= cur * ratio:
         return best_acc, best_status, f"partial {cur}aa -> complete {best_len}aa"
     return acc, status, ""
+
+
+class AmbiguousSymbol(ValueError):
+    """A symbol that several human genes carry only as a synonym: no telling which is meant."""
+
+
+def official_symbol(gene_id):
+    """Ensembl's official symbol (display name) for a gene ID; None if it could not be asked."""
+    resp = ensembl_get(f"/lookup/id/{gene_id}")
+    return resp.get("display_name") if isinstance(resp, dict) else None
+
+
+def select_symbol_gene(gene, resp):
+    """
+    Keep only the human gene the symbol officially names.
+
+    Ensembl's symbol lookup matches synonyms too, so one symbol can come back as several
+    human genes: "CDH1" returns CDH1 (E-cadherin, ENSG00000039068) and FZR1
+    (ENSG00000105325), which lists CDH1 as a synonym. Their orthologs are unrelated proteins.
+    Pooled, they made the human entry FZR1 whenever Ensembl happened to list it first, and
+    every species came back with two "orthologs", one of them Fzr1; the right protein was
+    then reached only because Fzr1 is much shorter than E-cadherin and the length checks
+    threw it out.
+
+    A gene whose official symbol is the one asked for is kept; one matched only through a
+    synonym is set aside and named in the returned note. If the symbol is nobody's official
+    symbol and several genes carry it as a synonym, nothing here can tell which was meant:
+    AmbiguousSymbol says so and lists them. A symbol that matches one gene is left alone,
+    with no extra request.
+
+    Returns (response restricted to the kept gene or genes, note or None).
+    """
+    entries = [e for e in (resp or {}).get("data", []) if e.get("id")]
+    ids = list(dict.fromkeys(e["id"] for e in entries))
+    if len(ids) < 2:
+        return resp, None
+    names = {i: official_symbol(i) for i in ids}
+    exact = [i for i in ids if (names[i] or "").upper() == gene.upper()]
+
+    def listing(which):
+        return ", ".join(f"{names[i]} ({i})" if names[i] else
+                         f"{i} (symbol could not be looked up)" for i in which)
+
+    if not exact:
+        if any(names[i] is None for i in ids):
+            raise AmbiguousSymbol(
+                f"Ensembl returned {len(ids)} human genes for {gene} ({listing(ids)}) and "
+                f"could not be asked which of them has {gene} as its official symbol. "
+                f"Run it again.")
+        raise AmbiguousSymbol(
+            f"{gene} is not an official human gene symbol in Ensembl, and {len(ids)} genes "
+            f"list it as a synonym: {listing(ids)}. Use the official symbol of the one you "
+            f"mean.")
+    aside = [i for i in ids if i not in exact]
+    if not aside:                               # several genes, all officially this symbol
+        return resp, None
+    kept = [e for e in entries if e["id"] in exact]
+    note = (f"the symbol {names[exact[0]]} also matches {listing(aside)} in Ensembl; used "
+            f"the gene whose official symbol is {names[exact[0]]} ({', '.join(exact)})")
+    return dict(resp, data=kept), note
 
 
 def taxid_for(species_name, target_taxid):
@@ -255,10 +318,14 @@ def resolve(gene, target_taxid):
     params = [("type", "orthologues"), ("format", "condensed"), ("sequence", "none")]
     params += [("target_taxon", str(t)) for t in target_taxa]
     resp = ensembl_get(f"/homology/symbol/human/{gene}", params)
+    resp, symbol_note = select_symbol_gene(gene, resp)
+    if symbol_note:
+        sys.stderr.write(f"  [note] {symbol_note}\n")
     src_gene, homs = parse_homologies(resp)
 
     result = {"gene": gene, "query_species": "homo_sapiens",
               "human_gene_id": src_gene, "target_taxid": target_taxid, "orthologs": [],
+              "notes": [symbol_note] if symbol_note else [],
               # False when Ensembl gave no answer at all (request failed, or the symbol is
               # not one it recognises) -- not the same as "no ortholog in that species"
               "homology_query_ok": resp is not None}
