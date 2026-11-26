@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-abscout.py — AbScout: cross-species antibody cross-reactivity by membrane region.
+abtaxa.py — AbTaxa: cross-species antibody cross-reactivity by membrane region.
 
-One command. Given a human gene symbol and a target species, AbScout:
+One command. Given a human gene symbol and a target species, AbTaxa:
   1. resolves orthologs in the antibody-rich model species + the target (Ensembl Compara)
   2. determines each MODEL protein's membrane topology (curated UniProt where annotated,
      otherwise TMbed with --out-format 4)
@@ -16,8 +16,8 @@ interpret, and makes no claim about whether a given antibody will bind.
 Chains: resolve_orthologs.py  +  TMbed  +  structure_compare.py  (all must be importable/installed).
 
 USAGE
-  python abscout.py --gene EGFR --target-taxon 7955 --json egfr_abscout.json
-  python abscout.py --batch cases.csv --batch-out results.csv
+  python abtaxa.py --gene EGFR --target-taxon 7955 --json egfr_abtaxa.json
+  python abtaxa.py --batch cases.csv --batch-out results.csv
   # taxids: 7955 zebrafish | 10181 naked mole-rat | 9541 cynomolgus | 9031 chicken | 9823 pig
 
 SCOPE: identity is a proxy for epitope conservation. It cannot see conformational epitopes,
@@ -42,15 +42,15 @@ import resolve_orthologs as ro
 import structure_compare as sc
 
 MODEL_ORDER = ["human", "mouse", "rat", "rabbit"]
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 # ----------------------------------------------------------------------------------
 # On-disk cache. Sequences and topology for a given accession never change, so caching
 # them makes repeat and batch runs near-instant and avoids hammering the public APIs.
 # ----------------------------------------------------------------------------------
-CACHE_DIR = Path(os.environ.get("ABSCOUT_CACHE", Path.home() / ".abscout_cache"))
+CACHE_DIR = Path(os.environ.get("ABTAXA_CACHE", Path.home() / ".abtaxa_cache"))
 CACHE_ENABLED = True
-# What AbScout *derives* from a UniProt entry (topology, anchor type, N-terminal processing,
+# What AbTaxa *derives* from a UniProt entry (topology, anchor type, N-terminal processing,
 # the reviewed-entry search) depends on its parsing code, so it is cached per version: a
 # release that parses better must not be served an answer an older release worked out.
 # Human THY1 kept a pre-GPI "no topology" answer this way and was sent to TMbed for good.
@@ -101,7 +101,7 @@ def tmbed_available():
 
 
 def _tmbed_hint():
-    return ("the source-code version of AbScout predicts it with TMbed" if IN_BROWSER
+    return ("the source-code version of AbTaxa predicts it with TMbed" if IN_BROWSER
             else "install TMbed (see README) to predict it")
 
 
@@ -571,7 +571,7 @@ def epitope_across_species(model_seqs, target_seq, epitope_ref, epitope_range):
             f"the epitope reference '{epitope_ref}' is not among the species compared in this "
             f"run ({have}). It may be the target species itself, or its ortholog may have been "
             "skipped as a partial sequence. Choose a reference from that list, or pass the "
-            "immunogen peptide with --epitope-seq and let AbScout find the species.")
+            "immunogen peptide with --epitope-seq and let AbTaxa find the species.")
 
     # Coordinates are only meaningful against a specific sequence. Silently returning an
     # empty epitope for an out-of-range span would look like "no conservation" rather than
@@ -728,7 +728,7 @@ def reviewed_alternatives(gene, taxid):
     return accs
 
 
-class AbScoutError(Exception):
+class AbTaxaError(Exception):
     """A run cannot proceed (e.g. no ortholog found). An ordinary exception rather than
     SystemExit so that batch mode can record it for one case and carry on with the rest."""
 
@@ -774,7 +774,7 @@ def detect_epitope_from_peptide(model_seqs, peptide, min_match=MIN_PEPTIDE_MATCH
 
 def no_target_message(gene, taxid, resolved):
     """Why there is no target sequence, as precisely as Ensembl lets us say."""
-    no_name_match = (" AbScout does not fall back to matching on gene name, because a gene "
+    no_name_match = (" AbTaxa does not fall back to matching on gene name, because a gene "
                      "with the same symbol is not necessarily the ortholog and a wrong sequence "
                      "here would silently distort every identity in the run.")
     slow = (" If the run log shows Ensembl timing out, run it again." if IN_BROWSER else
@@ -808,7 +808,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
     targets = [o for o in usable if o["is_target"]]
     models = [o for o in usable if not o["is_target"]]
     if not targets:
-        raise AbScoutError(no_target_message(gene, target_taxid, resolved))
+        raise AbTaxaError(no_target_message(gene, target_taxid, resolved))
     # everything that qualifies the numbers; travels to JSON / CSV. Starts with what the
     # ortholog lookup itself had to say (a symbol that is also another gene's synonym).
     notes = list(resolved.get("notes") or [])
@@ -871,7 +871,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
             sys.stderr.write(f"  [warn] could not fetch target {ident}: {exc}\n")
             unusable.append(f"{ident} ({t['species']}): {exc}")
     if not target_cands:
-        raise AbScoutError(
+        raise AbTaxaError(
             f"No usable target sequence for {gene} in taxid {target_taxid}. Ensembl Compara "
             f"found the ortholog, but neither UniProt nor Ensembl gave a sequence for it -- "
             + "; ".join(unusable) + ". Please check it manually.")
@@ -884,7 +884,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
         notes.append(f"target: {len(target_cands)} orthologs returned, used "
                      f"{target['uniprot']} ({len(target_seq)} aa) over {others}")
 
-    sys.stderr.write(f"[abscout] target {target['uniprot']} ({target['species']}); "
+    sys.stderr.write(f"[abtaxa] target {target['uniprot']} ({target['species']}); "
                      f"{len(models)} model orthologs to compare\n")
 
     # ---- one ortholog per model species -------------------------------------------------
@@ -1206,7 +1206,7 @@ def analyze(gene, target_taxid, work, epitope=None, epitope_ref="human", epitope
             epitope_range = (s, e)
             located = {"match_identity": pct, "detected_species": common,
                        "peptide_len": len("".join(epitope_seq.split()))}
-            sys.stderr.write(f"[abscout] immunogen peptide best matches {common} at residues "
+            sys.stderr.write(f"[abtaxa] immunogen peptide best matches {common} at residues "
                              f"{s}-{e} ({pct:.0f}% match); using {common} as the epitope reference\n")
 
     # A protein with no transmembrane segment in ANY model is soluble (e.g. ZO-1/TJP1, a
@@ -1664,7 +1664,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
 
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AbScout &mdash; {gene} in {target["species"]}</title>
+<title>AbTaxa &mdash; {gene} in {target["species"]}</title>
 <style>
  body{{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#000;max-width:820px;margin:28px auto;padding:0 18px;line-height:1.5}}
  h1{{font-size:22px;margin:0 0 2px}} .sub{{color:#000;margin:0 0 16px;font-size:14px}}
@@ -1689,7 +1689,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
  .whole{{font-size:11px;font-weight:400;opacity:.92;margin-top:2px}}
  a{{color:#000;text-decoration:underline}}
 </style></head><body>
-<h1>AbScout &mdash; {gene} in <i>{target["species"]}</i></h1>
+<h1>AbTaxa &mdash; {gene} in <i>{target["species"]}</i></h1>
 <p class="sub">Target protein {target["uniprot"]}</p>
 {notes_html}
 <div class="legend">Sequence identity to target:
@@ -1704,7 +1704,7 @@ def render_html(gene, target, model_results, epitope_info=None, notes=None, regi
 {regions_html}
 <p class="caveat">These are percent identities for your interpretation &mdash; not a guarantee
 of binding (conformational epitopes, glycosylation, and single hot-spot residues can still break
-binding). Generated by AbScout {__version__}{" (web version)" if IN_BROWSER else ""}.</p>
+binding). Generated by AbTaxa {__version__}{" (web version)" if IN_BROWSER else ""}.</p>
 </body></html>'''
 
 
@@ -1714,7 +1714,7 @@ def rank_and_report(gene, target, targets, model_results, epitope_info=None, not
     rows = sorted(model_results, key=lambda m: order.get(m["common"], 99))
     soluble = bool(model_results) and all(m.get("soluble") for m in model_results)
 
-    L = [f"AbScout -- {gene} in {target['species']} (taxid {target['taxid']})",
+    L = [f"AbTaxa -- {gene} in {target['species']} (taxid {target['taxid']})",
          f"Target protein: {target['uniprot']}"]
     if len(targets) > 1:
         L.append(f"(note: {len(targets)} target paralogs found; analysed {target['uniprot']})")
@@ -1909,7 +1909,7 @@ def rank_and_report(gene, target, targets, model_results, epitope_info=None, not
     L.append("\n  Percent identities are provided for your interpretation -- "
              "not a guarantee of binding.")
 
-    result = {"abscout_version": __version__,
+    result = {"abtaxa_version": __version__,
               "generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
               "gene": gene, "target": target, "n_target_paralogs": len(targets),
               "models": model_results}
@@ -1947,13 +1947,13 @@ def run_batch(path, out_csv, timeout):
     # any extra input columns (e.g. known_outcome, evidence) ride along so the results CSV
     # can be analysed directly against ground truth without a join
     known = {"case", "gene", "target_taxon", "epitope_coor", "epitope_seq", "epitope_ref"}
-    # also exclude names AbScout writes itself, or the output would get a duplicate header
+    # also exclude names AbTaxa writes itself, or the output would get a duplicate header
     # and the user's value would be clobbered by the computed one
     reserved = known | set(BATCH_COLUMNS)
     passthrough = [c for c in in_cols if c not in reserved]
     clashes = [c for c in in_cols if c in set(BATCH_COLUMNS) - known]
     if clashes:
-        sys.stderr.write(f"[warn] input column(s) {', '.join(clashes)} clash with AbScout's own "
+        sys.stderr.write(f"[warn] input column(s) {', '.join(clashes)} clash with AbTaxa's own "
                          "output columns and were not carried through; rename them to keep them.\n")
 
     ro.ENSEMBL_TIMEOUT = timeout
@@ -2065,14 +2065,14 @@ def run_single(gene, target_taxon, epitope=None, epitope_ref="human", epitope_se
     """
     One case end to end. The command line and the web page both call this, so the two give
     the same numbers from the same code. Returns {"report": terminal text, "result": the
-    JSON-ready dict, "html": the report page, "has_regions": bool}; raises AbScoutError or
+    JSON-ready dict, "html": the report page, "has_regions": bool}; raises AbTaxaError or
     ValueError when the case cannot run.
     """
     with tempfile.TemporaryDirectory() as work:
         resolved, target, targets, model_results, epitope_info = analyze(
             gene, target_taxon, work, epitope, epitope_ref, epitope_seq)
     if not model_results:
-        raise AbScoutError("No model orthologs could be compared (no sequences/topology).")
+        raise AbTaxaError("No model orthologs could be compared (no sequences/topology).")
     run_notes = resolved.get("notes", [])
     target_map = resolved.get("target_map")
     report, result = rank_and_report(gene, target, targets, model_results, epitope_info,
@@ -2080,7 +2080,7 @@ def run_single(gene, target_taxon, epitope=None, epitope_ref="human", epitope_se
     result["notes"] = run_notes
     if target_map:
         result["target_map"] = target_map
-    result["abscout_version"] = __version__ + (" (web)" if IN_BROWSER else "")
+    result["abtaxa_version"] = __version__ + (" (web)" if IN_BROWSER else "")
     result["generated"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     regions = resolved.get("region_alignments")
     if regions:
@@ -2092,7 +2092,7 @@ def run_single(gene, target_taxon, epitope=None, epitope_ref="human", epitope_se
 
 def main():
     ap = argparse.ArgumentParser(
-        description="AbScout: cross-species antibody cross-reactivity by membrane region.")
+        description="AbTaxa: cross-species antibody cross-reactivity by membrane region.")
     ap.add_argument("--gene", help="human gene symbol, e.g. EGFR")
     ap.add_argument("--target-taxon", type=int, help="NCBI taxid of the target species")
     ap.add_argument("--json", help="optional path to write the full result as JSON")
@@ -2100,7 +2100,7 @@ def main():
     ap.add_argument("--epitope-coor", "--epitope", dest="epitope_coor",
                     help="antibody immunogen residue range on the reference, e.g. 300-350")
     ap.add_argument("--epitope-seq", help="antibody immunogen PEPTIDE sequence from the datasheet; "
-                                          "AbScout locates it in the reference automatically")
+                                          "AbTaxa locates it in the reference automatically")
     ap.add_argument("--epitope-ref", default="human",
                     help="which model the epitope refers to (default: human)")
     ap.add_argument("--timeout", type=int, default=120,
@@ -2108,11 +2108,11 @@ def main():
                          "such as TJP1 or OCLN (default: 120, escalates on retry)")
     ap.add_argument("--batch", help="CSV of cases (columns: gene,target_taxon[,case,"
                                     "epitope_coor,epitope_seq,epitope_ref]) to run in one go")
-    ap.add_argument("--batch-out", default="abscout_batch.csv",
-                    help="where to write batch results (default: abscout_batch.csv)")
+    ap.add_argument("--batch-out", default="abtaxa_batch.csv",
+                    help="where to write batch results (default: abtaxa_batch.csv)")
     ap.add_argument("--no-cache", action="store_true",
                     help="ignore the on-disk cache of sequences and topology")
-    ap.add_argument("--version", action="version", version=f"AbScout {__version__}")
+    ap.add_argument("--version", action="version", version=f"AbTaxa {__version__}")
     args = ap.parse_args()
 
     global CACHE_ENABLED
@@ -2136,10 +2136,10 @@ def main():
     try:
         out = run_single(args.gene, args.target_taxon, epitope, args.epitope_ref,
                          args.epitope_seq)
-    except (ValueError, AbScoutError) as exc:
+    except (ValueError, AbTaxaError) as exc:
         # a problem with what was asked for (bad coordinates, unavailable reference species)
         # or with what could be found (no ortholog): say so plainly, no traceback
-        raise SystemExit(f"abscout: {exc}")
+        raise SystemExit(f"abtaxa: {exc}")
     print(out["report"])
     if out["has_regions"] and not args.html:
         sys.stderr.write("\n  Residue-by-residue alignments of the extracellular, transmembrane and "

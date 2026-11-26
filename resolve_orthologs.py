@@ -50,14 +50,14 @@ COMMON_NAME = {k: v[0] for k, v in MODEL_SPECIES.items()}
 # ----------------------------------------------------------------------------------
 # HTTP
 # ----------------------------------------------------------------------------------
-ENSEMBL_TIMEOUT = 120          # seconds; raise via abscout --timeout for slow gene families
+ENSEMBL_TIMEOUT = 120          # seconds; raise via abtaxa --timeout for slow gene families
 
 
 def ensembl_get(path, params=None):
     # JSON is requested with Ensembl's content-type URL parameter rather than a Content-Type
     # header. Ensembl documents both; the parameter keeps this a plain GET, which a web
     # browser can send to another site without a CORS pre-flight (the web version of
-    # AbScout runs this same function inside the browser).
+    # AbTaxa runs this same function inside the browser).
     if isinstance(params, dict):
         params = list(params.items())
     params = list(params or []) + [("content-type", "application/json")]
@@ -232,7 +232,7 @@ def upgrade_partial(acc, status, gene, taxid, ratio=1.3):
     Applies to reviewed entries too, since a reviewed entry can be partial. A reviewed
     accession is only ever replaced by another reviewed one, so curation is never traded
     away for length. The search is by gene symbol and UniProt matches synonyms, so the
-    caller must check that what comes back is the same protein (abscout.ortholog_score).
+    caller must check that what comes back is the same protein (abtaxa.ortholog_score).
     """
     cur = uniprot_length(acc)
     if not cur:
@@ -341,7 +341,7 @@ def resolve(gene, target_taxid):
         # Partial sequences (often not flagged as 'fragment') silently drop whole regions.
         # Unreviewed entries are the common offenders and are checked here; a reviewed entry
         # can also be short, but verifying every one would cost two extra UniProt calls per
-        # ortholog, so that case is caught in abscout.analyze(), which already holds the
+        # ortholog, so that case is caught in abtaxa.analyze(), which already holds the
         # sequence and the target length and can act only when the length actually looks wrong.
         if acc and status == "unreviewed":
             acc, status, note = upgrade_partial(acc, status, gene, taxid)

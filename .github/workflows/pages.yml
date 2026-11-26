@@ -27,8 +27,8 @@ jobs:
       - run: pip install requests biopython numpy
       - run: python test_structure_compare.py
       - run: python test_resolve_orthologs.py
-      - run: python test_abscout.py
-      # copies abscout.py, resolve_orthologs.py and structure_compare.py into the site as-is
+      - run: python test_abtaxa.py
+      # copies abtaxa.py, resolve_orthologs.py and structure_compare.py into the site as-is
       - run: python web/build_site.py --out _site
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

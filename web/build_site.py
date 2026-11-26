@@ -1,7 +1,7 @@
 """
-Assemble the AbScout web version into a folder that any static host (GitHub Pages) can serve.
+Assemble the AbTaxa web version into a folder that any static host (GitHub Pages) can serve.
 
-The site runs the repository's own abscout.py, resolve_orthologs.py and structure_compare.py,
+The site runs the repository's own abtaxa.py, resolve_orthologs.py and structure_compare.py,
 copied byte for byte, so the web version cannot drift from the source code: every number it
 shows comes from the same functions as the command line.
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 PYODIDE_VERSION = "314.0.7"
 PYODIDE_CDN = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
-PY_FILES = ["abscout.py", "resolve_orthologs.py", "structure_compare.py"]
+PY_FILES = ["abtaxa.py", "resolve_orthologs.py", "structure_compare.py"]
 WEB_FILES = ["index.html", "worker.js"]
 
 
@@ -40,8 +40,8 @@ def build(out, pyodide_url=PYODIDE_CDN):
         (out / f).write_text(text)
     (out / ".nojekyll").write_text("")
 
-    version = re.search(r'^__version__ = "([^"]+)"', (root / "abscout.py").read_text(), re.M)
-    info = {"abscout": version.group(1) if version else "?",
+    version = re.search(r'^__version__ = "([^"]+)"', (root / "abtaxa.py").read_text(), re.M)
+    info = {"abtaxa": version.group(1) if version else "?",
             "pyodide": PYODIDE_VERSION,
             "commit": os.environ.get("GITHUB_SHA", "")[:12]}
     (out / "version.json").write_text(json.dumps(info, indent=2) + "\n")
@@ -49,10 +49,10 @@ def build(out, pyodide_url=PYODIDE_CDN):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Build the AbScout web version into a folder.")
+    ap = argparse.ArgumentParser(description="Build the AbTaxa web version into a folder.")
     ap.add_argument("--out", default="_site", help="output folder (default: _site)")
     ap.add_argument("--pyodide-url", default=PYODIDE_CDN,
                     help="where Pyodide is served from (default: the jsDelivr CDN)")
     a = ap.parse_args()
     info = build(a.out, a.pyodide_url)
-    print(f"built {a.out}/ with AbScout {info['abscout']} on Pyodide {info['pyodide']}")
+    print(f"built {a.out}/ with AbTaxa {info['abtaxa']} on Pyodide {info['pyodide']}")

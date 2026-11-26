@@ -16,4 +16,4 @@ jobs:
       # the suites stub every Ensembl/UniProt call, so CI needs no network and no TMbed
       - run: python test_structure_compare.py
       - run: python test_resolve_orthologs.py
-      - run: python test_abscout.py
+      - run: python test_abtaxa.py

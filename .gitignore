@@ -11,10 +11,12 @@ _site/
 # reports and batch results written into the repo folder by local runs
 /*.html
 /*.json
+/abtaxa_batch*.csv
+# the same, written under the tool's former name
 /abscout_batch*.csv
 
 # local caches and environments
-.abscout_cache/
+.abtaxa_cache/
 .venv/
 .ipynb_checkpoints/
 .DS_Store

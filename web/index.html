@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AbScout</title>
+<title>AbTaxa</title>
 <meta name="description" content="Will an antibody work in your species? Compares the antibody's target protein across species, by membrane region and at the epitope. Runs in your browser.">
 <style>
  :root{--ink:#000;--muted:#000;--line:#e5e7eb;--soft:#f7f8fa;--accent:#1f5f99}
@@ -37,8 +37,8 @@
 </style>
 </head>
 <body>
-<h1>AbScout</h1>
-<p class="sub">Will an antibody work in your species? AbScout compares the antibody's target
+<h1>AbTaxa</h1>
+<p class="sub">Will an antibody work in your species? AbTaxa compares the antibody's target
 protein between your species and the species antibodies are raised in or validated on (human,
 mouse, rat, rabbit), by membrane region and at the epitope.
 <span id="ver"></span></p>
@@ -76,7 +76,7 @@ mouse, rat, rabbit), by membrane region and at the epitope.
       <div class="field">
         <label for="epseq">Immunogen peptide</label>
         <input id="epseq" name="epseq" placeholder="e.g. ERPPPVPNPDYEP" spellcheck="false">
-        <span class="hint">From the antibody datasheet; AbScout finds where it sits.</span>
+        <span class="hint">From the antibody datasheet; AbTaxa finds where it sits.</span>
       </div>
       <div class="field">
         <label for="epcoor">or residue range</label>
@@ -109,16 +109,16 @@ mouse, rat, rabbit), by membrane region and at the epitope.
     <button class="ghost" id="dl-html" type="button">Download report (HTML)</button>
     <button class="ghost" id="dl-json" type="button">Download data (JSON)</button>
   </div>
-  <iframe id="report" title="AbScout report" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
+  <iframe id="report" title="AbTaxa report" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
 </section>
 
 <div class="about">
   <p><b>Web version.</b> Membrane topology comes from UniProt's curated annotation. A species
   without one is compared on whole-protein identity and the run notes say so; the
-  <a href="https://github.com/yuingan/abscout">source-code version</a> predicts topology with
+  <a href="https://github.com/yuingan/abtaxa">source-code version</a> predicts topology with
   TMbed and also runs many cases from a spreadsheet.</p>
   <p>Everything runs in your browser. Queries go directly from your browser to Ensembl and
-  UniProt; nothing is sent to or stored by AbScout.</p>
+  UniProt; nothing is sent to or stored by AbTaxa.</p>
   <p>Percent identities are provided for your interpretation &mdash; not a guarantee of binding.</p>
 </div>
 
@@ -173,7 +173,7 @@ worker.onmessage = (ev) => {
   const m = ev.data;
   if (m.type === "status") $("status").textContent = m.text;
   else if (m.type === "ready") {
-    $("ver").textContent = "AbScout " + m.version + ", web version.";
+    $("ver").textContent = "AbTaxa " + m.version + ", web version.";
     if (!busy) $("status").textContent = "Ready.";
   } else if (m.type === "log") {
     $("log").textContent += m.line + "\n";
@@ -187,8 +187,8 @@ worker.onmessage = (ev) => {
     } else {
       $("status").textContent = "";
       showError(m.unexpected
-        ? "Something went wrong inside AbScout. Please report it at " +
-          "https://github.com/yuingan/abscout/issues with the details below.\n\n" + m.error
+        ? "Something went wrong inside AbTaxa. Please report it at " +
+          "https://github.com/yuingan/abtaxa/issues with the details below.\n\n" + m.error
         : m.error);
     }
   }
@@ -214,7 +214,7 @@ function save(text, type, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function stem() {
-  return "abscout_" + $("gene").value.trim().toUpperCase() + "_" + taxonFrom($("taxon").value);
+  return "abtaxa_" + $("gene").value.trim().toUpperCase() + "_" + taxonFrom($("taxon").value);
 }
 $("dl-html").addEventListener("click", () => last && save(last.html, "text/html", stem() + ".html"));
 $("dl-json").addEventListener("click", () => last && save(last.result, "application/json", stem() + ".json"));

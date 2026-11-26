@@ -1,12 +1,12 @@
-// AbScout web version: runs the unchanged AbScout Python source (abscout.py,
+// AbTaxa web version: runs the unchanged AbTaxa Python source (abtaxa.py,
 // resolve_orthologs.py, structure_compare.py) inside the browser with Pyodide.
-// Nothing is sent to any AbScout server; queries go straight from this browser to
+// Nothing is sent to any AbTaxa server; queries go straight from this browser to
 // Ensembl and UniProt, exactly as the command-line version makes them.
 //
 // build_site.py fills in PYODIDE_URL and copies the Python files into py/.
 
 const PYODIDE_URL = "__PYODIDE_URL__";
-const PY_FILES = ["structure_compare.py", "resolve_orthologs.py", "abscout.py"];
+const PY_FILES = ["structure_compare.py", "resolve_orthologs.py", "abtaxa.py"];
 const PACKAGES = ["numpy", "biopython", "requests"];
 
 let pyodide = null;
@@ -21,25 +21,25 @@ async function boot() {
   post("status", { text: "Loading the Python runtime (first visit only: about 15 MB)..." });
   const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
   pyodide = await loadPyodide({ indexURL: PYODIDE_URL });
-  // AbScout writes progress to stderr; show it line by line while a run is going
+  // AbTaxa writes progress to stderr; show it line by line while a run is going
   pyodide.setStderr({ batched: (line) => post("log", { line }) });
   pyodide.setStdout({ batched: () => {} });
 
   post("status", { text: "Loading numpy and Biopython..." });
   await loadPackages();
 
-  post("status", { text: "Loading AbScout..." });
-  pyodide.FS.mkdirTree("/home/pyodide/abscout");
+  post("status", { text: "Loading AbTaxa..." });
+  pyodide.FS.mkdirTree("/home/pyodide/abtaxa");
   for (const f of PY_FILES) {
     const r = await fetch("py/" + f, { cache: "no-cache" });
     if (!r.ok) throw new Error("could not load " + f + " (" + r.status + ")");
-    pyodide.FS.writeFile("/home/pyodide/abscout/" + f, await r.text());
+    pyodide.FS.writeFile("/home/pyodide/abtaxa/" + f, await r.text());
   }
   const version = pyodide.runPython(`
 import sys
-sys.path.insert(0, "/home/pyodide/abscout")
-import abscout
-abscout.__version__`);
+sys.path.insert(0, "/home/pyodide/abtaxa")
+import abtaxa
+abtaxa.__version__`);
   booted = true;
   post("ready", { version });
 }
@@ -65,7 +65,7 @@ async function loadPackages() {
       "Your browser could not load " + missing().join(", ") + ", part of the Python runtime " +
       "the page downloads from " + new URL(PYODIDE_URL, self.location).host + ". Reload the " +
       "page to try again. If it keeps failing, a network filter or browser extension may be " +
-      "blocking that download; please report it at https://github.com/yuingan/abscout/issues " +
+      "blocking that download; please report it at https://github.com/yuingan/abtaxa/issues " +
       "with the details below." + (problems.length ? "\n\nDetails:\n" + problems.join("\n") : ""));
   }
 }
@@ -86,7 +86,7 @@ async function checkServices() {
       if (!r.ok) throw new Error("HTTP " + r.status);
     } catch (e) {
       throw new Error(
-        "This browser could not reach " + name + " (" + e.message + "). AbScout needs " +
+        "This browser could not reach " + name + " (" + e.message + "). AbTaxa needs " +
         "Ensembl and UniProt; check the network connection, or whether a firewall or " +
         "browser extension blocks rest.ensembl.org / rest.uniprot.org, then try again.");
     }
@@ -95,15 +95,15 @@ async function checkServices() {
 }
 
 const RUN_PY = `
-import json, abscout
+import json, abtaxa
 a = dict(ARGS)
 try:
-    ep = abscout.parse_epitope_coor(a["epitope_coor"]) if a.get("epitope_coor") else None
-    out = abscout.run_single(a["gene"], int(a["taxon"]), ep,
+    ep = abtaxa.parse_epitope_coor(a["epitope_coor"]) if a.get("epitope_coor") else None
+    out = abtaxa.run_single(a["gene"], int(a["taxon"]), ep,
                              a.get("epitope_ref") or "human", a.get("epitope_seq") or None)
     res = {"ok": True, "html": out["html"], "result": json.dumps(out["result"], indent=2),
            "report": out["report"]}
-except (ValueError, abscout.AbScoutError) as exc:
+except (ValueError, abtaxa.AbTaxaError) as exc:
     res = {"ok": False, "error": str(exc)}
 json.dumps(res)
 `;
@@ -116,7 +116,7 @@ self.onmessage = async (ev) => {
     if (msg.type !== "run") return;
     post("status", { text: "Checking that Ensembl and UniProt can be reached..." });
     await checkServices();
-    post("status", { text: "Running AbScout..." });
+    post("status", { text: "Running AbTaxa..." });
     pyodide.globals.set("ARGS", pyodide.toPy(msg.args));
     const out = JSON.parse(pyodide.runPython(RUN_PY));
     post("done", out);

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Test AbScout's report + epitope logic (no network/TMbed). Run: python test_abscout.py"""
+"""Test AbTaxa's report + epitope logic (no network/TMbed). Run: python test_abtaxa.py"""
 import importlib.util
 
-spec = importlib.util.spec_from_file_location("ab", "abscout.py")
+spec = importlib.util.spec_from_file_location("ab", "abtaxa.py")
 ab = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ab)
 
@@ -189,7 +189,7 @@ def test_soluble_protein_report():
 
 
 
-def test_cache_roundtrip(tmpdir="/tmp/abscout_cache_test"):
+def test_cache_roundtrip(tmpdir="/tmp/abtaxa_cache_test"):
     import shutil, pathlib
     shutil.rmtree(tmpdir, ignore_errors=True)
     old_dir, old_en = ab.CACHE_DIR, ab.CACHE_ENABLED
@@ -226,11 +226,11 @@ def test_low_coverage_note():
                "overall": 89.0, "coverage_pct": 55.0, "length": 400}]
     report, result = ab.rank_and_report("GENEX", TARGET, [TARGET], models)
     assert "low alignment coverage" in report, report
-    assert result["abscout_version"] and result["generated"], "provenance missing"
+    assert result["abtaxa_version"] and result["generated"], "provenance missing"
     print("low-coverage note + provenance OK")
 
 
-def test_batch_csv(tmp="/tmp/abscout_batch_test"):
+def test_batch_csv(tmp="/tmp/abtaxa_batch_test"):
     import shutil, pathlib, csv as _csv
     shutil.rmtree(tmp, ignore_errors=True)
     pathlib.Path(tmp).mkdir(parents=True)
@@ -355,7 +355,7 @@ def test_range_used_is_reported():
     print("range_used OK: 35-60 on a 40 aa protein reported as 35-40")
 
 
-def test_batch_survives_failure_and_carries_notes(tmp="/tmp/abscout_batch_test2"):
+def test_batch_survives_failure_and_carries_notes(tmp="/tmp/abtaxa_batch_test2"):
     """One failing case (even SystemExit) must not sink the batch; notes reach the CSV."""
     import shutil, pathlib, csv as _csv
     shutil.rmtree(tmp, ignore_errors=True)
@@ -374,7 +374,7 @@ def test_batch_survives_failure_and_carries_notes(tmp="/tmp/abscout_batch_test2"
 
     def fake(gene, *a, **k):
         if gene == "NOPE":
-            raise ab.AbScoutError("No target-species ortholog")
+            raise ab.AbTaxaError("No target-species ortholog")
         if gene == "QUIT":
             raise SystemExit("legacy exit")
         return good
@@ -720,7 +720,7 @@ def test_no_compara_ortholog_message():
     ro.compara_genomes = lambda taxid: [("Chicken", "gallus_gallus", True)]   # no network
     try:
         ab.analyze("ACTB", 9031, "/tmp")
-    except ab.AbScoutError as e:
+    except ab.AbTaxaError as e:
         msg = str(e)
         assert "No Compara ortholog" in msg and "check it manually" in msg, msg
         assert "does not fall back to matching on gene name" in msg, msg
@@ -944,7 +944,7 @@ def test_deleted_uniprot_entry_is_reported_not_used():
              _orth("heterocephalus_glaber_female", "A0A0P6J0R8", "unreviewed", 10181, True)]
     try:
         _stub_run(ro, orths, Seqs({"P04216": _seq(161)}))
-    except ab.AbScoutError as e:
+    except ab.AbTaxaError as e:
         msg = str(e)
         assert "A0A0P6J0R8" in msg and "deleted from UniProtKB" in msg, msg
         assert "check it manually" in msg, msg
@@ -1059,7 +1059,7 @@ def test_no_target_message_says_why():
         ro.compara_genomes = lambda t: [("Damara mole rat", "fukomys_damarensis", False)]
         try:
             _stub_run(ro, [_orth("human", "P07766", "reviewed", 9606)], REAL)
-        except ab.AbScoutError as e:
+        except ab.AbTaxaError as e:
             assert "Compara's gene trees" in str(e), str(e)
         else:
             raise AssertionError("no target must stop the run")
@@ -1180,7 +1180,7 @@ def test_no_sequence_anywhere_is_reported():
     try:
         _stub_run(ro, [_orth("human", "P07766", "reviewed", 9606), dog],
                   _DeletedSeqs(REAL, ["A0A_DELETED"]), tmbed_ok=False)
-    except ab.AbScoutError as e:
+    except ab.AbTaxaError as e:
         assert "neither UniProt nor Ensembl gave a sequence" in str(e), str(e)
     else:
         raise AssertionError("must stop when no sequence can be had")
@@ -1345,4 +1345,4 @@ if __name__ == "__main__":
     test_no_sequence_anywhere_is_reported()
     test_long_target_whole_protein_is_shown()
     test_insertion_near_an_end_and_resolver_note_reach_the_report()
-    print("\nALL ABSCOUT TESTS PASSED")
+    print("\nALL ABTAXA TESTS PASSED")

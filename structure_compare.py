@@ -455,7 +455,7 @@ def compare(A, B, ref_topology=None):
 
 
 # ----------------------------------------------------------------------------------
-# Sequence-only comparison (no structures needed) -- AbScout's core output
+# Sequence-only comparison (no structures needed) -- AbTaxa's core output
 # ----------------------------------------------------------------------------------
 def _runs(idx):
     """Consecutive runs in a sorted list of indices, as (first, last) pairs."""
@@ -596,7 +596,7 @@ def project_topology(ref_seq, ref_topology, seq, pairs=None):
 def compare_sequences(seqA, seqB, ref_topology=None, epitope=None):
     """
     Per-region % sequence identity between reference A and target B, from a sequence
-    alignment alone -- NO structures required. This is AbScout's core, and it works for
+    alignment alone -- NO structures required. This is AbTaxa's core, and it works for
     any UniProt accession (unlike AlphaFold DB, which doesn't cover every recent entry).
     Use compare() with structures if you additionally want lDDT/RMSD.
 

@@ -3,13 +3,13 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "abscout"
-version = "0.9.3"
+name = "abtaxa"
+version = "0.10.0"
 description = "Predict cross-species antibody cross-reactivity for membrane proteins by per-region sequence identity"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "AbScout authors" }]
+authors = [{ name = "AbTaxa authors" }]
 keywords = [
     "antibody",
     "cross-reactivity",
@@ -36,11 +36,11 @@ dependencies = [
 structure = ["tmtools"]
 
 [project.scripts]
-abscout = "abscout:main"
+abtaxa = "abtaxa:main"
 
 [project.urls]
-Homepage = "https://github.com/yuingan/abscout"
-Repository = "https://github.com/yuingan/abscout"
+Homepage = "https://github.com/yuingan/abtaxa"
+Repository = "https://github.com/yuingan/abtaxa"
 
 [tool.setuptools]
-py-modules = ["abscout", "resolve_orthologs", "structure_compare"]
+py-modules = ["abtaxa", "resolve_orthologs", "structure_compare"]

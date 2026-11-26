@@ -1,4 +1,4 @@
-name: abscout
+name: abtaxa
 channels:
   - conda-forge
   - bioconda
@@ -19,7 +19,7 @@ dependencies:
       # ---- optional: enables the standalone structural comparison in structure_compare.py ----
       - tmtools
 
-# After `conda env create -f environment.yml` and `conda activate abscout`, install TMbed with:
+# After `conda env create -f environment.yml` and `conda activate abtaxa`, install TMbed with:
 #     pip install --no-deps git+https://github.com/BernhoferM/TMbed.git
 # (--no-deps prevents TMbed from overriding the pinned transformers above)
-# then install AbScout itself with:  pip install .
+# then install AbTaxa itself with:  pip install .
