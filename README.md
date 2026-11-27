@@ -19,10 +19,6 @@ conserved that antibody's exact epitope is.
 **No installation needed for single cases:** the [web version](https://yuingan.github.io/abtaxa/)
 runs this same code in your browser (see [Web version](#web-version)).
 
-*AbTaxa was called AbScout up to version 0.9.3. It was renamed in November 2026 because an
-unrelated antibody catalogue tool has the same name. Only the name changed: the command is now
-`abtaxa`, the cache folder `~/.abtaxa_cache`, and the JSON field `abtaxa_version`.*
-
 ---
 
 ## What it does
@@ -215,8 +211,6 @@ a protein pays the TMbed cost (~20–40 s); repeat and batch runs are near-insta
 keeps load off the public Ensembl and UniProt APIs. What AbTaxa *derives* from a UniProt entry
 (topology, how the protein is anchored, signal peptide) is cached per AbTaxa version, so an
 upgrade that reads entries better re-reads them once; sequences and TMbed predictions are kept.
-If you used the tool under its old name, keep your cached TMbed predictions with
-`mv ~/.abscout_cache ~/.abtaxa_cache`.
 
 ## Beyond percent identity
 
@@ -450,8 +444,8 @@ python -m http.server -d _site 8000    # then open http://localhost:8000
 
 ## Citing
 
-If AbTaxa is useful in your work, please cite the repository / its archived DOI
-(see `CITATION.cff`).
+If AbTaxa is useful in your work, please cite the repository
+(https://github.com/yuingan/abtaxa).
 
 ## License
 
